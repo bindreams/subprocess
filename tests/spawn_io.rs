@@ -429,7 +429,7 @@ fn uncontained_child_reports_containment_none() {
 /// Spawn a contained `spawn-grandchild` and return (child, grandchild_stream).
 /// The grandchild's connected socket is proof it is alive; reading it to EOF
 /// later is the deterministic proof it died.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
 fn spawn_contained_tree() -> (subprocess::Child, std::net::TcpStream) {
     use std::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind control listener");
@@ -520,7 +520,7 @@ fn windows_kill_tree_reaps_the_grandchild() {
 }
 
 /// Probe that our child is inside OUR job object (not just any job).
-/// Uses the test-only `Child::test_job_handle()` accessor so `IsProcessInJob`
+/// Uses the test-only `Child::test_job_handle_contains_self()` accessor so `IsProcessInJob`
 /// asks about the handle we created, not an inherited one.
 #[cfg(windows)]
 #[test]
@@ -528,7 +528,7 @@ fn windows_child_is_inside_our_job_after_spawn() {
     let (child, _gc_stream) = spawn_contained_tree();
     assert_eq!(child.containment(), subprocess::Containment::JobObject);
 
-    // test_job_handle() is cfg(all(windows,test)) — confirms the job we hold.
+    // test_job_handle_contains_self() is cfg(all(windows,test)) — confirms the job we hold.
     let in_job = child.test_job_handle_contains_self();
     assert!(in_job, "child must be inside our job object after spawn");
 

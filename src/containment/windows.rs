@@ -301,13 +301,11 @@ pub(crate) fn attach_job(child: &std::process::Child) -> io::Result<Option<JobHa
 
     match job_result {
         Ok(job) => Ok(Some(job)),
-        Err(e) => {
+        Err(_e) => {
+            // Job assignment failed. The failure is surfaced to the caller via the
+            // returned Containment::None (now) / TreeWalk (after Task 7). A library
+            // must not write to the parent's stderr unconditionally.
             // TODO(task-7): wire TreeWalk fallback here instead of Containment::None.
-            eprintln!(
-                "subprocess: Windows Job Object assignment failed ({}); \
-                 tree-reaping degraded to lone-process (Task 7 wires TreeWalk fallback)",
-                e
-            );
             Ok(None)
         }
     }
