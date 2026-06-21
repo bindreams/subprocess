@@ -1,14 +1,15 @@
 //! Per-OS containment dispatch (two-phase: prepare before spawn, attach after).
-//! No-op until the mechanism tasks (3-7) fill the bodies.
+//! Unix process-group branch filled by Task 3.
 
 use crate::containment::{ContainMode, ContainRequest, Containment, Nesting};
 use crate::error::Error;
 
 /// Decided before spawn (env-marker root detection); later tasks also apply
 /// pre-spawn flags / process_group / pre_exec inside `prepare`.
-#[allow(dead_code)]
 pub(crate) struct Prepared {
+    #[allow(dead_code)] // read in #[cfg(unix)] branch of attach()
     pub mode: Option<ContainMode>,
+    #[allow(dead_code)] // read in #[cfg(unix)] branch of attach()
     pub is_root: bool,
 }
 
@@ -19,37 +20,44 @@ pub(crate) struct Prepared {
 pub(crate) enum Attached {
     #[default]
     None,
-    // Windows JobObject(..), Unix ProcessGroup(pgid)/Cgroup(..), TreeWalk(ProcessId) — later tasks.
+    #[cfg(unix)]
+    ProcessGroup(i32), // pgid (== root pid)
+                       // Windows JobObject(..), Unix Cgroup(..), TreeWalk(ProcessId) — later tasks.
 }
 
-#[allow(dead_code)]
 impl Attached {
     /// Hard-kill the contained tree (best-effort; already-gone is success).
     pub(crate) fn hard_kill(&self) {
         match self {
             Attached::None => {}
+            #[cfg(unix)]
+            Attached::ProcessGroup(pgid) => crate::containment::unix::kill_group(*pgid),
         }
     }
+
     /// Send the graceful termination signal to the group (signal-only).
     pub(crate) fn terminate(&self) -> Result<(), Error> {
         match self {
             Attached::None => Ok(()),
+            #[cfg(unix)]
+            Attached::ProcessGroup(pgid) => crate::containment::unix::term_group(*pgid).map_err(Error::Io),
         }
     }
+
     /// Neutralize teardown so `detach()` leaves the tree running (e.g. clear a
     /// Job's KILL_ON_JOB_CLOSE before its handle drops). No-op for mechanisms
     /// whose resource-drop does not kill (pgroup/cgroup/treewalk/none).
+    #[allow(dead_code)] // used in Task 9 (tree teardown in Drop/detach)
     pub(crate) fn disarm(&mut self) {
         match self {
             Attached::None => {}
+            #[cfg(unix)]
+            Attached::ProcessGroup(_) => {} // pgroup drop doesn't kill — no-op
         }
     }
 }
 
-/// Phase 1 (before spawn): env-marker root detection. Later tasks add the
-/// pre-spawn setup (Windows creation_flags+handle hygiene; Unix process_group/
-/// cgroup-pre_exec/setsid) here — WITHOUT changing this signature.
-#[allow(dead_code)]
+/// Phase 1 (before spawn): env-marker root detection + pre-spawn OS setup.
 pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest) -> Prepared {
     let mode = req.mode;
     if mode.is_none() {
@@ -64,12 +72,29 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
         // the spawn engine, so the marker survives env_clear (N1). `env` appends.
         std_cmd.env(crate::containment::NESTED_ENV, "1");
     }
-    let _ = std_cmd; // later tasks use it for flags/process_group/pre_exec
+    #[cfg(unix)]
+    if is_root && mode.is_some() {
+        crate::containment::unix::set_process_group(std_cmd); // cgroup (Task 4) may upgrade the achieved mode
+    }
     Prepared { mode, is_root }
 }
 
-/// Phase 2 (after spawn, before SharedChild::new): attach the mechanism. No-op
-/// for now → contained requests resolve to None until Tasks 3-7 fill bodies.
-pub(crate) fn attach(_child: &std::process::Child, _prepared: &Prepared) -> Result<(Containment, Attached), Error> {
+/// Phase 2 (after spawn, before SharedChild::new): attach the mechanism.
+pub(crate) fn attach(child: &std::process::Child, prepared: &Prepared) -> Result<(Containment, Attached), Error> {
+    #[cfg(unix)]
+    {
+        if prepared.mode.is_some() {
+            if prepared.is_root {
+                // Root: we set process_group(0) pre-spawn so pgid == pid.
+                let pgid = child.id() as i32;
+                return Ok((Containment::ProcessGroup, Attached::ProcessGroup(pgid)));
+            } else {
+                // Nested: joined the ancestor's group; kill_tree falls back to direct kill.
+                return Ok((Containment::ProcessGroup, Attached::None));
+            }
+        }
+    }
+    // Uncontained (or non-Unix).
+    let _ = (child, prepared);
     Ok((Containment::None, Attached::None))
 }

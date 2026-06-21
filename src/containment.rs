@@ -95,6 +95,10 @@ impl Default for ContainRequest {
 #[allow(dead_code)]
 pub(crate) const NESTED_ENV: &str = "__SUBPROCESS_GROUP_ROOT";
 
+#[cfg(unix)]
+#[path = "containment/unix.rs"]
+pub(crate) mod unix;
+
 #[path = "containment/dispatch.rs"]
 pub(crate) mod dispatch;
 #[allow(unused_imports)]

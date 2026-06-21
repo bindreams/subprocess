@@ -33,7 +33,6 @@ pub struct Child {
     pipes: BTreeMap<Fd, ParentEnd>,
     kill_on_drop: bool,
     containment: Containment,
-    #[allow(dead_code)] // used in Task 9 (tree teardown in Drop)
     attached: crate::containment::Attached,
 }
 
@@ -86,6 +85,20 @@ impl Child {
         // shared_child delegates to std::process::Child::kill, which returns
         // Ok(()) for an already-exited child on all platforms.
         self.shared.kill().map_err(Error::Io)
+    }
+
+    /// Hard-kill the contained tree (or the lone process if uncontained).
+    pub fn kill_tree(&self) -> Result<(), Error> {
+        self.attached.hard_kill();
+        // Also kill the direct child (covers the uncontained / nested-no-group case).
+        let _ = self.shared.kill();
+        Ok(())
+    }
+
+    /// Send the graceful termination signal to the contained group (signal-only;
+    /// does not wait or reap). Graceful escalation with a deadline is Plan 5.
+    pub fn terminate_tree(&self) -> Result<(), Error> {
+        self.attached.terminate()
     }
 
     /// Take the parent's write end of the child's stdin pipe, if configured.

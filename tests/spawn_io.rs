@@ -425,3 +425,47 @@ fn uncontained_child_reports_containment_none() {
     assert_eq!(child.containment(), subprocess::Containment::None);
     let _ = child.wait();
 }
+
+/// Spawn a contained `spawn-grandchild` and return (child, grandchild_stream).
+/// The grandchild's connected socket is proof it is alive; reading it to EOF
+/// later is the deterministic proof it died.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn spawn_contained_tree() -> (subprocess::Child, std::net::TcpStream) {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind control listener");
+    let addr = listener.local_addr().unwrap().to_string();
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "spawn-grandchild", &addr]);
+    cmd.contain();
+    let child = cmd.spawn().expect("spawn");
+    // Accept both connections; keep the grandchild's (tag 'G'). Accepting it is
+    // proof the grandchild is alive — no is_alive() race.
+    let mut gc = None;
+    for _ in 0..2 {
+        let (mut s, _) = listener.accept().expect("accept control conn");
+        let mut tag = [0u8; 1];
+        s.read_exact(&mut tag).expect("read tag");
+        if tag[0] == b'G' {
+            gc = Some(s);
+        }
+    }
+    (child, gc.expect("grandchild connected"))
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_kill_tree_reaps_the_grandchild() {
+    let (child, mut gc_stream) = spawn_contained_tree();
+    assert_eq!(child.containment(), subprocess::Containment::ProcessGroup);
+
+    child.kill_tree().expect("kill_tree");
+    let _ = child.wait(); // reap the root
+
+    // Deterministic proof the grandchild died: its control socket EOFs (the OS
+    // closed it on the process's death). A blocking read returns 0 — no timer,
+    // no immediate-is_alive race against the async group teardown.
+    let mut buf = [0u8; 1];
+    let n = gc_stream.read(&mut buf).expect("read grandchild control socket");
+    assert_eq!(n, 0, "kill_tree must kill the grandchild, not just the root");
+}

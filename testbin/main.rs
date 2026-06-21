@@ -70,6 +70,35 @@ fn main() {
             let code: i32 = args[2].parse().unwrap();
             exit(code);
         }
+        "control-block" => {
+            // Connect to the test's control listener, send a 1-byte tag, then
+            // block holding the socket open. On our death the OS closes it,
+            // EOF-ing the test's read — a real exit event, never a timer.
+            let addr = &args[2];
+            let tag = args.get(3).map(String::as_str).unwrap_or("?");
+            let mut sock = std::net::TcpStream::connect(addr).unwrap();
+            sock.write_all(tag.as_bytes()).unwrap();
+            sock.flush().unwrap();
+            let mut buf = [0u8; 1];
+            let _ = sock.read(&mut buf); // blocks until the socket closes (our death) / test writes
+        }
+        "spawn-grandchild" => {
+            // Spawn a grandchild that holds its own control connection (tag "G"),
+            // then hold ours (tag "R"). Both die together iff containment works.
+            let addr = args[2].clone();
+            let exe = std::env::current_exe().unwrap();
+            #[allow(clippy::zombie_processes)] // intentional: grandchild must outlive us; containment kills it
+            let _gc = std::process::Command::new(exe)
+                .args(["control-block", &addr, "G"])
+                .spawn()
+                .unwrap();
+            // Become a control-block ourselves (no test-owned stdin → no EOF confound).
+            let mut sock = std::net::TcpStream::connect(&addr).unwrap();
+            sock.write_all(b"R").unwrap();
+            sock.flush().unwrap();
+            let mut buf = [0u8; 1];
+            let _ = sock.read(&mut buf);
+        }
         other => {
             eprintln!("subprocess_testbin: unknown mode {other:?}");
             exit(2);

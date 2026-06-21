@@ -19,6 +19,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Thre
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+nix = { version = "0.29", features = ["signal", "process"] }
 
 [[bin]]
 name = "subprocess_testbin"
