@@ -89,8 +89,16 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
         };
     }
 
-    let shared = SharedChild::spawn(&mut std_cmd).map_err(Error::Io)?;
-    // Read the identity immediately after spawn while the child is guaranteed
+    // Phase 1 (before spawn): root detection + (later tasks) pre-spawn setup.
+    let prepared = crate::containment::prepare(&mut std_cmd, &cmd.contain_request());
+    // We own the std Child so containment can job-assign + resume it (Task 5).
+    let child = std_cmd.spawn().map_err(Error::Io)?;
+    // Phase 2 (after spawn, before adopt): attach the mechanism (job/cgroup/...).
+    let (containment, attached) = crate::containment::attach(&child, &prepared)?;
+    // Adopt AFTER resume so SharedChild::new sees a live (resumed) child; the
+    // whole Plan-3 wait/kill/identity/pump model is preserved.
+    let shared = SharedChild::new(child).map_err(Error::Io)?;
+    // Read the identity immediately after adopt while the child is guaranteed
     // resolvable: on Windows shared_child holds the process handle (no PID
     // reuse possible); on Unix the child is an un-reaped zombie until wait()
     // so /proc still lists it.
@@ -100,7 +108,14 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
         ))
     })?;
 
-    Ok(Child::from_parts(shared, id, parent_ends, kill_on_drop))
+    Ok(Child::from_parts(
+        shared,
+        id,
+        parent_ends,
+        kill_on_drop,
+        containment,
+        attached,
+    ))
 }
 
 fn build_std_command(cmd: &Command) -> Result<std::process::Command, Error> {

@@ -6,6 +6,7 @@ use std::io::{PipeReader, PipeWriter};
 use shared_child::SharedChild;
 
 use crate::command::Command;
+use crate::containment::Containment;
 use crate::error::Error;
 use crate::identity::ProcessId;
 use crate::stdio::Fd;
@@ -31,6 +32,9 @@ pub struct Child {
     id: ProcessId,
     pipes: BTreeMap<Fd, ParentEnd>,
     kill_on_drop: bool,
+    containment: Containment,
+    #[allow(dead_code)] // used in Task 9 (tree teardown in Drop)
+    attached: crate::containment::Attached,
 }
 
 impl Child {
@@ -39,13 +43,22 @@ impl Child {
         id: ProcessId,
         pipes: BTreeMap<Fd, ParentEnd>,
         kill_on_drop: bool,
+        containment: Containment,
+        attached: crate::containment::Attached,
     ) -> Child {
         Child {
             shared,
             id,
             pipes,
             kill_on_drop,
+            containment,
+            attached,
         }
+    }
+
+    /// The tree-teardown mechanism actually established for this child.
+    pub fn containment(&self) -> Containment {
+        self.containment
     }
 
     /// This child's stable identity (see [`crate::identity::ProcessId`]).

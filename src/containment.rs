@@ -72,7 +72,7 @@ pub enum Nesting {
 }
 
 /// The resolved containment request carried on a `Command` (crate-internal).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContainRequest {
     /// `None` = not contained.
     pub mode: Option<ContainMode>,
@@ -94,6 +94,11 @@ impl Default for ContainRequest {
 /// load-bearing: nothing outside this crate may set it.**
 #[allow(dead_code)]
 pub(crate) const NESTED_ENV: &str = "__SUBPROCESS_GROUP_ROOT";
+
+#[path = "containment/dispatch.rs"]
+pub(crate) mod dispatch;
+#[allow(unused_imports)]
+pub(crate) use dispatch::{attach, prepare, Attached, Prepared};
 
 #[cfg(test)]
 #[path = "containment_tests.rs"]

@@ -414,3 +414,14 @@ fn detach_leaves_the_child_running() {
     // orphan when this test process exits. No sleep, no poll, no timeout.
     drop(writer);
 }
+
+// Containment =====
+
+#[test]
+fn uncontained_child_reports_containment_none() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["subprocess_testbin", "exit", "0"]);
+    let child = cmd.spawn().expect("spawn");
+    assert_eq!(child.containment(), subprocess::Containment::None);
+    let _ = child.wait();
+}
