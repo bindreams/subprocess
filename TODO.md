@@ -48,6 +48,7 @@ Design spec: `.tmp/claude/superpowers/specs/2026-06-20-subprocess-design.md`.
 
 ## Hardening / tech-debt (from foundation review)
 
+- [ ] Before publish, exclude or feature-gate `subprocess_testbin` so the test helper isn't shipped in the published crate.
 - [ ] When FFI lands (containment/identity/wait plans), flip `[lints.rust] unsafe_op_in_unsafe_fn` from `warn` to `deny`.
 - [ ] At the edition-2024 bump, convert the test-only `extern "system"` blocks (quote/windows_tests.rs) to `unsafe extern`.
 - [ ] (Optional) Supplement the deterministic exhaustive never-panics/round-trip sweeps with a `proptest`/`cargo-fuzz` unbounded property for the quoting parsers.

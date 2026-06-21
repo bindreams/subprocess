@@ -1,0 +1,57 @@
+//! Test-only helper spawned by the crate's integration tests. std-only; does
+//! not depend on the `subprocess` crate. Behavior is selected by argv[1].
+
+use std::io::{Read, Write};
+use std::process::exit;
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let mode = args.get(1).map(String::as_str).unwrap_or("");
+    match mode {
+        "echo-argv" => {
+            let mut out = std::io::stdout().lock();
+            for a in &args[2..] {
+                writeln!(out, "{a}").unwrap();
+            }
+        }
+        "env" => {
+            let mut out = std::io::stdout().lock();
+            for name in &args[2..] {
+                let val = std::env::var(name).unwrap_or_default();
+                writeln!(out, "{name}={val}").unwrap();
+            }
+        }
+        "emit" => {
+            let n_out: usize = args[2].parse().unwrap();
+            let n_err: usize = args[3].parse().unwrap();
+            std::io::stdout().write_all(&vec![b'o'; n_out]).unwrap();
+            std::io::stderr().write_all(&vec![b'e'; n_err]).unwrap();
+        }
+        "tee-both" => {
+            // Copy stdin to BOTH stdout and stderr in a loop, so a parent that
+            // does not pump concurrently will deadlock once a pipe buffer fills.
+            let mut stdin = std::io::stdin().lock();
+            let mut stdout = std::io::stdout().lock();
+            let mut stderr = std::io::stderr().lock();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = stdin.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                stdout.write_all(&buf[..n]).unwrap();
+                stderr.write_all(&buf[..n]).unwrap();
+            }
+            stdout.flush().unwrap();
+            stderr.flush().unwrap();
+        }
+        "exit" => {
+            let code: i32 = args[2].parse().unwrap();
+            exit(code);
+        }
+        other => {
+            eprintln!("subprocess_testbin: unknown mode {other:?}");
+            exit(2);
+        }
+    }
+}
