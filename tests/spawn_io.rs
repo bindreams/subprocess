@@ -355,3 +355,21 @@ fn arbitrary_fd_is_unsupported_in_this_plan() {
     let err = cmd.spawn().unwrap_err(); // but spawn rejects it
     assert!(matches!(err, subprocess::error::Error::Unsupported { .. }));
 }
+
+#[test]
+fn run_free_fn_builds_command_from_args() {
+    let s = subprocess::run([testbin(), "echo-argv", "world"]).read().expect("read");
+    assert_eq!(s, "world\n");
+}
+
+#[test]
+fn read_errors_on_invalid_utf8() {
+    let mut cmd = Command::new();
+    // 0xff is not valid UTF-8.
+    cmd.executable(testbin()).args(["subprocess_testbin", "emit-raw", "ff"]);
+    let err = cmd.read().expect_err("should fail on invalid UTF-8");
+    assert!(
+        matches!(err, subprocess::error::Error::Io(ref e) if e.kind() == std::io::ErrorKind::InvalidData),
+        "expected Io(InvalidData), got {err:?}"
+    );
+}

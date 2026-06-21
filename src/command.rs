@@ -219,6 +219,11 @@ impl Command {
 
     /// Run to completion with inherited stdio, returning the exit status.
     pub fn status(&mut self) -> Result<crate::ExitStatus, Error> {
+        // Force inherit so a caller who previously called .stdout(pipe()) does
+        // not get a pump-free wait() that deadlocks once the pipe buffer fills.
+        self.stdin(crate::Stdio::inherit())?;
+        self.stdout(crate::Stdio::inherit())?;
+        self.stderr(crate::Stdio::inherit())?;
         let child = self.spawn()?;
         child.wait()
     }

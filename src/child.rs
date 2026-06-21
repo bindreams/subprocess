@@ -112,15 +112,7 @@ impl Child {
     }
 
     pub(crate) fn take_stdin_writer(&mut self) -> Option<PipeWriter> {
-        match self.pipes.remove(&Fd::STDIN) {
-            Some(ParentEnd::Writer(w)) => Some(w),
-            other => {
-                if let Some(e) = other {
-                    self.pipes.insert(Fd::STDIN, e);
-                }
-                None
-            }
-        }
+        self.stdin()
     }
 
     pub(crate) fn take_reader(&mut self, fd: Fd) -> Option<PipeReader> {

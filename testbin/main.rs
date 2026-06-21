@@ -56,6 +56,16 @@ fn main() {
             stdout.flush().unwrap();
             stderr.flush().unwrap();
         }
+        "emit-raw" => {
+            // Write raw bytes (as hex pairs) to stdout; used to test invalid-UTF-8 handling.
+            // Each arg after "emit-raw" is a 2-hex-digit byte value.
+            let mut out = std::io::stdout().lock();
+            for hex in &args[2..] {
+                let byte = u8::from_str_radix(hex, 16).unwrap();
+                out.write_all(&[byte]).unwrap();
+            }
+            out.flush().unwrap();
+        }
         "exit" => {
             let code: i32 = args[2].parse().unwrap();
             exit(code);
