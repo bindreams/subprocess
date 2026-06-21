@@ -4,7 +4,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use super::stat_parse::{parse_starttime_jiffies, parse_state};
+use super::stat_parse::parse_starttime_jiffies;
 use super::{RawPid, StartToken};
 
 pub(super) fn start_token(pid: RawPid) -> Option<StartToken> {
@@ -17,15 +17,7 @@ pub(super) fn is_running(pid: RawPid, start: StartToken) -> bool {
     let Ok(stat) = std::fs::read(format!("/proc/{pid}/stat")) else {
         return false; // gone (reaped) => not running
     };
-    match parse_starttime_jiffies(&stat) {
-        Some(j) if StartToken::from_raw(j) == start => {}
-        _ => return false, // reused PID or unparseable
-    }
-    // Running = not zombie ('Z') and not dead ('X'/'x').
-    match parse_state(&stat) {
-        Some(s) => !matches!(s, b'Z' | b'X' | b'x'),
-        None => false,
-    }
+    super::stat_parse::running_from_stat(&stat, start)
 }
 
 pub(super) fn created_at(start: StartToken) -> Option<SystemTime> {

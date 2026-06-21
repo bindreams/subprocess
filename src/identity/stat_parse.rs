@@ -24,6 +24,20 @@ pub(super) fn parse_state(stat: &[u8]) -> Option<u8> {
     tail(stat)?.split_whitespace().next()?.bytes().next()
 }
 
+/// Decide whether a process is *running* from its raw `/proc/<pid>/stat` bytes:
+/// the starttime token must match `start` (reject a reused PID) AND the state
+/// must not be zombie ('Z') or dead ('X'/'x'). Pure, so it is host-testable.
+pub(super) fn running_from_stat(stat: &[u8], start: super::StartToken) -> bool {
+    match parse_starttime_jiffies(stat) {
+        Some(j) if super::StartToken::from_raw(j) == start => {}
+        _ => return false,
+    }
+    match parse_state(stat) {
+        Some(s) => !matches!(s, b'Z' | b'X' | b'x'),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 #[path = "stat_parse_tests.rs"]
 mod stat_parse_tests;
