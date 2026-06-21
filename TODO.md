@@ -46,6 +46,10 @@ Design spec: `.tmp/claude/superpowers/specs/2026-06-20-subprocess-design.md`.
 - [ ] Settle license line for the ported qodana shlex (Apache-2.0, user-authored) — attribution header / NOTICE.
 - [ ] Re-validate own-containment vs `process-wrap` dependency, and `cgroups-rs` vs thin direct cgroup-fs impl.
 
+## Spawn engine (from Plan 4)
+
+- [ ] (Plan 4) Implement raw backend (CreateProcess/execve) to support independent `executable` + `commandline` on Windows — std has no stable API to set `lpApplicationName` independently of `lpCommandLine`, so the std-only backend forces `argv[0]` to equal the executable when both are set.
+
 ## Hardening / tech-debt (from foundation review)
 
 - [ ] Before publish, exclude or feature-gate `subprocess_testbin` so the test helper isn't shipped in the published crate.

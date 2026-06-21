@@ -10,5 +10,8 @@ pub mod quote;
 pub mod stdio;
 pub use stdio::{Fd, Stdio};
 
+mod child;
+pub use child::Child;
+
 mod command;
 pub use command::Command;
