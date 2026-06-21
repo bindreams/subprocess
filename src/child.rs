@@ -99,7 +99,7 @@ impl Child {
     }
 
     /// Consume the handle without killing or waiting for the child (opt out of
-    /// kill-on-drop, which is added by Task 6's Drop impl).
+    /// kill-on-drop; see the [`Drop`] impl below).
     pub fn detach(mut self) {
         self.kill_on_drop = false;
     }
@@ -117,6 +117,25 @@ impl Child {
 
     pub(crate) fn take_reader(&mut self, fd: Fd) -> Option<PipeReader> {
         take_reader(&mut self.pipes, fd)
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        if !self.kill_on_drop {
+            return; // detached / opted out
+        }
+        // Hard-kill the lone process (tree-wide kill is Plan 4) and reap so we
+        // never leak a zombie/handle. Best-effort: `shared_child`'s kill() and
+        // wait() are idempotent and safe after exit, so an already-exited child
+        // is fine and a double-call cannot happen (drop runs once).
+        //
+        // Order matters: kill BEFORE wait. On Unix, reaping (wait) frees the PID
+        // for reuse, so signaling (kill) after a reap could hit an unrelated
+        // process. shared_child enforces this ordering internally too; keep it
+        // here so reordering the two lines cannot reintroduce the reuse race.
+        let _ = self.shared.kill();
+        let _ = self.shared.wait();
     }
 }
 

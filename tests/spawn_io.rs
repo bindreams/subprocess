@@ -373,3 +373,44 @@ fn read_errors_on_invalid_utf8() {
         "expected Io(InvalidData), got {err:?}"
     );
 }
+
+// Drop policy =====
+
+#[test]
+fn drop_kills_and_reaps_the_child() {
+    let mut cmd = Command::new();
+    // tee-both with a piped (but never-written, never-closed) stdin blocks the
+    // child reading stdin -> it stays alive until we drop the Child.
+    cmd.executable(testbin()).args(["subprocess_testbin", "tee-both"]);
+    cmd.stdin(Stdio::pipe()).unwrap();
+    let child = cmd.spawn().expect("spawn");
+    let id = child.id();
+    assert!(id.is_alive(), "child runs while its stdin stays open");
+    drop(child); // kill_on_drop default true => SIGKILL/TerminateProcess + reap
+    assert!(!id.is_alive(), "child must be dead (and reaped) after drop");
+}
+
+#[test]
+fn detach_leaves_the_child_running() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["subprocess_testbin", "tee-both"]);
+    cmd.stdin(Stdio::pipe()).unwrap();
+    let mut child = cmd.spawn().expect("spawn");
+    let id = child.id();
+    // Take the stdin writer BEFORE detaching, so we can end the orphan cleanly
+    // (EOF) afterward without needing a wait handle (kill-by-foreign-id is Plan 6).
+    let writer = child.stdin().expect("stdin pipe writer");
+    assert!(id.is_alive(), "child runs while its stdin stays open");
+
+    child.detach(); // consumes Child; with kill_on_drop=false, Drop neither kills nor reaps
+
+    // The key assertion: detach did NOT kill the process — it is still blocked
+    // reading its (still-open) stdin.
+    assert!(id.is_alive(), "detached child must keep running");
+
+    // Cleanup (not an assertion): closing stdin gives the child EOF so it exits
+    // on its own. We do NOT assert it became dead — observing a detached
+    // process's exit needs the Plan-6 foreign-wait primitive. The OS reaps the
+    // orphan when this test process exits. No sleep, no poll, no timeout.
+    drop(writer);
+}
