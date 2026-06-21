@@ -32,6 +32,22 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
             });
         }
     }
+    // Reject merge-targeting-a-merge: the two-pass algorithm only resolves one
+    // level of indirection. Transitive chaining requires a fixpoint loop and is
+    // deferred to the raw backend.
+    for slot in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
+        if let Some(ResolvedStdio::Merge(target)) = fds.get(&slot) {
+            if matches!(fds.get(target), Some(ResolvedStdio::Merge(_))) {
+                return Err(Error::Unsupported {
+                    op: format!("merge {slot} -> {target} -> <another merge>"),
+                    platform: std::env::consts::OS,
+                    detail: "chained merges (merge-to-merge) are not supported; \
+                             redirect to a concrete slot (pipe/file/null/inherit)"
+                        .into(),
+                });
+            }
+        }
+    }
 
     let mut std_cmd = build_std_command(cmd)?;
 
@@ -74,11 +90,13 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     }
 
     let shared = SharedChild::spawn(&mut std_cmd).map_err(Error::Io)?;
-    let id = ProcessId::of(shared.id()).ok_or_else(|| {
-        Error::Io(std::io::Error::other(
-            "spawned child vanished before its identity could be read",
-        ))
-    })?;
+    // Read the identity immediately after spawn while the child is guaranteed
+    // resolvable: on Windows shared_child holds the process handle (no PID
+    // reuse possible); on Unix the child is an un-reaped zombie until wait()
+    // so /proc still lists it. If identity resolution fails despite this (e.g.
+    // a buggy kernel / container), record the raw PID without a start token;
+    // it is still usable for wait/kill.
+    let id = ProcessId::of(shared.id());
 
     Ok(Child::from_parts(shared, id, parent_ends, kill_on_drop))
 }
@@ -88,7 +106,7 @@ fn build_std_command(cmd: &Command) -> Result<std::process::Command, Error> {
     let mut std_cmd = match cmd.input() {
         CommandInput::Empty => return Err(Error::Io(std::io::Error::other("no program specified"))),
         CommandInput::Argv(argv) => {
-            let (program, rest) = program_and_args(cmd, argv)?;
+            let (program, rest) = resolve_program_argv(cmd, argv)?;
             let mut c = std::process::Command::new(program);
             c.args(rest);
             c
@@ -104,19 +122,29 @@ fn build_std_command(cmd: &Command) -> Result<std::process::Command, Error> {
     Ok(std_cmd)
 }
 
+// Pick the executable file to load (`executable` overrides argv[0]/first-token).
+fn resolve_program(cmd: &Command, fallback: std::ffi::OsString) -> std::ffi::OsString {
+    match cmd.executable_path() {
+        Some(p) => p.as_os_str().to_os_string(),
+        None => fallback,
+    }
+}
+
 // Program + the trailing args (argv mode). `executable` overrides the loaded
 // file; argv[0] is the conventional program name otherwise.
-fn program_and_args<'a>(
+fn resolve_program_argv<'a>(
     cmd: &'a Command,
     argv: &'a [std::ffi::OsString],
 ) -> Result<(std::ffi::OsString, &'a [std::ffi::OsString]), Error> {
     if argv.is_empty() && cmd.executable_path().is_none() {
         return Err(Error::Io(std::io::Error::other("empty argv")));
     }
-    let program = match cmd.executable_path() {
-        Some(p) => p.as_os_str().to_os_string(),
-        None => argv[0].clone(),
+    let fallback = if argv.is_empty() {
+        std::ffi::OsString::new()
+    } else {
+        argv[0].clone()
     };
+    let program = resolve_program(cmd, fallback);
     let rest = if argv.is_empty() { argv } else { &argv[1..] };
     Ok((program, rest))
 }
@@ -132,10 +160,7 @@ fn build_from_commandline(cmd: &Command, line: &std::ffi::OsString) -> Result<st
     if argv.is_empty() {
         return Err(Error::Io(std::io::Error::other("empty command line")));
     }
-    let program = match cmd.executable_path() {
-        Some(p) => p.as_os_str().to_os_string(),
-        None => argv[0].clone(),
-    };
+    let program = resolve_program(cmd, argv[0].clone());
     let mut c = std::process::Command::new(program);
     c.args(&argv[1..]);
     Ok(c)
@@ -151,18 +176,27 @@ fn build_from_commandline(cmd: &Command, line: &std::ffi::OsString) -> Result<st
     // passing the whole line would duplicate the program token in the child's
     // argv. We split the first token off with first_token_and_rest_wide.
     //
-    // NOTE: when BOTH `executable` is set AND a command line is given, the child's
-    // argv[0] becomes `executable`, not the command line's first token. The raw
-    // backend (Plan 4) removes this limitation; std has no stable API to set
-    // lpApplicationName independently of lpCommandLine.
+    // Limitation: std has no stable API to set lpApplicationName independently
+    // of lpCommandLine. So when executable() is set alongside a commandline(),
+    // we explicitly reject the combination rather than silently doing the wrong
+    // thing (the child's argv[0] would come from the commandline, but the file
+    // loaded would be executable — a confusing mismatch). The raw backend
+    // (Plan 4) removes this limitation via direct CreateProcess.
     // TODO(plan4): implement raw backend to support independent executable + commandline on Windows
+    if cmd.executable_path().is_some() {
+        return Err(Error::Unsupported {
+            op: "spawn with executable() and commandline() both set".into(),
+            platform: "windows",
+            detail: "std::process has no API to set the loaded file independently of \
+                     the command line string; use the argv() builder or wait for the \
+                     raw backend (Plan 4)"
+                .into(),
+        });
+    }
     let wide: Vec<u16> = line.encode_wide().collect();
     let (first, rest) = crate::quote::windows::first_token_and_rest_wide(&wide)
         .ok_or_else(|| Error::Io(std::io::Error::other("empty command line")))?;
-    let program = match cmd.executable_path() {
-        Some(p) => p.as_os_str().to_os_string(),
-        None => std::ffi::OsString::from_wide(&first),
-    };
+    let program = std::ffi::OsString::from_wide(&first);
     let mut c = std::process::Command::new(program);
     c.raw_arg(std::ffi::OsString::from_wide(&rest)); // args only — program is prepended by std
     Ok(c)

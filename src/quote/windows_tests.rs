@@ -1,4 +1,4 @@
-use crate::quote::windows::{first_token_and_rest_wide, join_wide};
+use crate::quote::windows::{first_token_and_rest_wide, first_token_wide, join_wide};
 
 fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
@@ -157,8 +157,6 @@ mod roundtrip {
         }
     }
 }
-
-use crate::quote::windows::first_token_wide;
 
 fn first(s: &str) -> Option<String> {
     first_token_wide(&w(s)).map(|t| String::from_utf16(&t).unwrap())

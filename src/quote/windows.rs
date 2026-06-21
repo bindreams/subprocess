@@ -106,27 +106,7 @@ pub fn first_token_and_rest_wide(cmd: &[u16]) -> Option<(Vec<u16>, Vec<u16>)> {
 /// unterminated); an unquoted token runs to the next space/tab; backslashes
 /// are literal here (no escaping).
 pub fn first_token_wide(cmd: &[u16]) -> Option<Vec<u16>> {
-    let mut i = 0usize;
-    while i < cmd.len() && (cmd[i] == SPACE || cmd[i] == TAB) {
-        i += 1;
-    }
-    if i >= cmd.len() {
-        return None;
-    }
-    let mut out = Vec::new();
-    if cmd[i] == QUOTE {
-        i += 1;
-        while i < cmd.len() && cmd[i] != QUOTE {
-            out.push(cmd[i]);
-            i += 1;
-        }
-    } else {
-        while i < cmd.len() && cmd[i] != SPACE && cmd[i] != TAB {
-            out.push(cmd[i]);
-            i += 1;
-        }
-    }
-    Some(out)
+    first_token_and_rest_wide(cmd).map(|(first, _)| first)
 }
 
 #[cfg(test)]

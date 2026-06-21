@@ -24,7 +24,10 @@ pub(crate) enum ParentEnd {
 #[derive(Debug)]
 pub struct Child {
     shared: SharedChild,
-    id: ProcessId,
+    /// Stable identity resolved immediately after spawn. `None` if identity
+    /// could not be read (degenerate environment); the child is still usable
+    /// for wait/kill in that case.
+    id: Option<ProcessId>,
     pipes: BTreeMap<Fd, ParentEnd>,
     kill_on_drop: bool,
 }
@@ -32,7 +35,7 @@ pub struct Child {
 impl Child {
     pub(crate) fn from_parts(
         shared: SharedChild,
-        id: ProcessId,
+        id: Option<ProcessId>,
         pipes: BTreeMap<Fd, ParentEnd>,
         kill_on_drop: bool,
     ) -> Child {
@@ -44,14 +47,24 @@ impl Child {
         }
     }
 
-    /// This child's stable identity (see [`crate::identity::ProcessId`]).
-    pub fn id(&self) -> ProcessId {
+    /// This child's stable identity, or `None` if identity could not be read
+    /// at spawn time (see [`crate::identity::ProcessId`]).
+    pub fn id(&self) -> Option<ProcessId> {
         self.id
     }
 
-    /// Whether the child is still running (delegates to identity liveness).
+    /// The raw OS process id (not stable-across-time; prefer [`id`](Self::id)).
+    pub fn raw_pid(&self) -> u32 {
+        self.shared.id()
+    }
+
+    /// Whether the child is still running. Returns `false` if identity could
+    /// not be read at spawn time (conservative — avoids a false positive).
     pub fn is_alive(&self) -> bool {
-        self.id.is_alive()
+        match &self.id {
+            Some(id) => id.is_alive(),
+            None => false,
+        }
     }
 
     /// Block until the child exits, returning its status.
@@ -64,14 +77,11 @@ impl Child {
         self.shared.try_wait().map_err(Error::Io)
     }
 
-    /// Hard-kill the (lone) process. Already-dead is success.
+    /// Hard-kill the process. Returns `Ok(())` if already dead.
     pub fn kill(&self) -> Result<(), Error> {
-        match self.shared.kill() {
-            Ok(()) => Ok(()),
-            // shared_child maps "already exited" to Ok on most platforms; guard anyway.
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
-            Err(e) => Err(Error::Io(e)),
-        }
+        // shared_child delegates to std::process::Child::kill, which returns
+        // Ok(()) for an already-exited child on all platforms.
+        self.shared.kill().map_err(Error::Io)
     }
 
     /// Take the parent's write end of the child's stdin pipe, if configured.
@@ -97,10 +107,10 @@ impl Child {
         take_reader(&mut self.pipes, Fd::STDERR)
     }
 
-    /// Consume the handle and leave the process running (cancel kill-on-drop).
+    /// Consume the handle without killing or waiting for the child (opt out of
+    /// kill-on-drop, which is added by Task 6's Drop impl).
     pub fn detach(mut self) {
         self.kill_on_drop = false;
-        // Drop runs next; with kill_on_drop false it neither kills nor reaps.
     }
 }
 
