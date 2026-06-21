@@ -41,3 +41,24 @@ fn is_copy_and_exposes_pid() {
     assert_eq!(a.pid(), 5);
     assert_eq!(b.pid(), 5);
 }
+
+#[test]
+fn current_process_resolves_exists_and_is_alive() {
+    let me = ProcessId::current();
+    assert!(me.exists());
+    assert!(me.is_alive());
+    assert_eq!(Some(me), ProcessId::of(me.pid()));
+    assert!(me.created_at().is_some());
+}
+
+#[test]
+fn imposter_token_neither_exists_nor_is_alive() {
+    let me = ProcessId::current();
+    // Same live PID, deliberately wrong start token => a different identity.
+    let imposter = ProcessId {
+        pid: me.pid(),
+        start: StartToken::from_raw(me.start.raw().wrapping_add(1)),
+    };
+    assert!(!imposter.exists(), "wrong token must not resolve to our process");
+    assert!(!imposter.is_alive(), "wrong token is not a running process");
+}
