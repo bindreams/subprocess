@@ -111,9 +111,64 @@ fn kill_on_drop_defaults_true_and_toggles() {
 }
 
 #[test]
-fn env_and_cwd_recorded() {
+fn fd_last_set_wins_for_same_slot() {
     let mut cmd = Command::new();
-    cmd.env("K", "V").current_dir("/tmp");
-    assert!(cmd.cwd().is_some());
-    // env_ops detail is exercised end-to-end in the spawn integration tests.
+    cmd.stdout(Stdio::pipe()).unwrap();
+    cmd.stdout(Stdio::null()).unwrap();
+    assert!(matches!(cmd.fds().get(&Fd::STDOUT), Some(ResolvedStdio::Null)));
+}
+
+#[test]
+fn inherit_resolves_through_builder() {
+    let mut cmd = Command::new();
+    cmd.stderr(Stdio::inherit()).unwrap();
+    assert!(matches!(cmd.fds().get(&Fd::STDERR), Some(ResolvedStdio::Inherit)));
+}
+
+#[test]
+fn null_resolves_through_builder() {
+    let mut cmd = Command::new();
+    cmd.stdin(Stdio::null()).unwrap();
+    assert!(matches!(cmd.fds().get(&Fd::STDIN), Some(ResolvedStdio::Null)));
+}
+
+#[test]
+fn merge_resolves_through_builder() {
+    let mut cmd = Command::new();
+    cmd.stderr(Stdio::merge(Fd::STDOUT)).unwrap();
+    assert!(matches!(
+        cmd.fds().get(&Fd::STDERR),
+        Some(ResolvedStdio::Merge(Fd::STDOUT))
+    ));
+}
+
+#[test]
+fn env_ops_recorded_in_order() {
+    use crate::command::EnvOp;
+    let mut cmd = Command::new();
+    cmd.env_clear();
+    cmd.env("A", "1");
+    cmd.env_remove("B");
+    cmd.envs([("C", "3"), ("D", "4")]);
+    let ops = cmd.env_ops();
+    assert!(matches!(ops[0], EnvOp::Clear));
+    assert!(matches!(&ops[1], EnvOp::Set(k, v) if k == "A" && v == "1"));
+    assert!(matches!(&ops[2], EnvOp::Remove(k) if k == "B"));
+    assert!(matches!(&ops[3], EnvOp::Set(k, v) if k == "C" && v == "3"));
+    assert!(matches!(&ops[4], EnvOp::Set(k, v) if k == "D" && v == "4"));
+    assert_eq!(ops.len(), 5);
+}
+
+#[test]
+fn envs_empty_iterator_records_nothing() {
+    let mut cmd = Command::new();
+    cmd.envs::<_, &str, &str>([]);
+    assert!(cmd.env_ops().is_empty());
+}
+
+#[test]
+fn cwd_recorded() {
+    let mut cmd = Command::new();
+    cmd.current_dir("/tmp");
+    assert_eq!(cmd.cwd(), Some(Path::new("/tmp")));
 }

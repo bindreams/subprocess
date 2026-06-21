@@ -1,6 +1,8 @@
-//! The `Command` builder. This plan implements only the input surface
-//! (executable / args / commandline); stdio, env, containment, and spawning
-//! are added by later plans.
+//! The `Command` builder: executable/args/commandline input model (Task 1)
+//! extended with stdio, env, cwd, and kill_on_drop (Task 3).
+//!
+//! Note: `Command` does not implement `Clone` because [`ResolvedStdio`] can
+//! hold a [`std::fs::File`], which is not `Clone` by design.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
