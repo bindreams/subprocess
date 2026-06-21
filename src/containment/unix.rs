@@ -1,7 +1,7 @@
 //! Unix process-group containment: the root becomes a process-group leader
 //! (`process_group(0)`, pgid == pid), and the whole group is signalled with
-//! `killpg`. Adapted from hole `kill-group`. cgroup v2 (Task 4) preempts this
-//! when available; this is the universal Unix fallback and the macOS path.
+//! `killpg`. cgroup v2 (Task 4) preempts this when available; this is the
+//! universal Unix fallback and the macOS path.
 //! Parent-side signals use `nix` (not hand-rolled `libc`); see Global Constraints.
 
 use std::io;
@@ -15,9 +15,15 @@ pub(crate) fn set_process_group(std_cmd: &mut std::process::Command) {
     std_cmd.process_group(0); // leader: pgid == pid
 }
 
-/// Hard-kill the whole process group. Already-gone (ESRCH) is success.
-pub(crate) fn kill_group(pgid: i32) {
-    let _ = killpg(Pid::from_raw(pgid), Signal::SIGKILL); // ESRCH/etc ignored — gone is the goal
+/// Hard-kill the whole process group. ESRCH (gone) is success; EPERM falls
+/// back to the leader directly (pgid == pid for a process-group root).
+pub(crate) fn kill_group(pgid: i32) -> io::Result<()> {
+    match killpg(Pid::from_raw(pgid), Signal::SIGKILL) {
+        Ok(()) => Ok(()),
+        Err(nix::errno::Errno::ESRCH) => Ok(()),
+        Err(nix::errno::Errno::EPERM) => kill_direct(pgid),
+        Err(e) => Err(io::Error::from(e)),
+    }
 }
 
 /// SIGTERM the group; ESRCH (gone) is success; EPERM falls back to the leader
@@ -27,6 +33,13 @@ pub(crate) fn term_group(pgid: i32) -> io::Result<()> {
         Ok(()) => Ok(()),
         Err(nix::errno::Errno::ESRCH) => Ok(()),
         Err(nix::errno::Errno::EPERM) => term_direct(pgid),
+        Err(e) => Err(io::Error::from(e)),
+    }
+}
+
+fn kill_direct(pid: i32) -> io::Result<()> {
+    match kill(Pid::from_raw(pid), Signal::SIGKILL) {
+        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
         Err(e) => Err(io::Error::from(e)),
     }
 }

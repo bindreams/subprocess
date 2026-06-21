@@ -92,7 +92,6 @@ impl Default for ContainRequest {
 /// jobs nest but Unix process groups do not, so only the OUTERMOST `.contain()`
 /// creates a group; descendants inherit this marker and join it. **Reserved and
 /// load-bearing: nothing outside this crate may set it.**
-#[allow(dead_code)]
 pub(crate) const NESTED_ENV: &str = "__SUBPROCESS_GROUP_ROOT";
 
 #[cfg(unix)]

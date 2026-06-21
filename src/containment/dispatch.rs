@@ -27,11 +27,13 @@ pub(crate) enum Attached {
 
 impl Attached {
     /// Hard-kill the contained tree (best-effort; already-gone is success).
-    pub(crate) fn hard_kill(&self) {
+    pub(crate) fn hard_kill(&self) -> Result<(), crate::error::Error> {
         match self {
-            Attached::None => {}
+            Attached::None => Ok(()),
             #[cfg(unix)]
-            Attached::ProcessGroup(pgid) => crate::containment::unix::kill_group(*pgid),
+            Attached::ProcessGroup(pgid) => {
+                crate::containment::unix::kill_group(*pgid).map_err(crate::error::Error::Io)
+            }
         }
     }
 
@@ -86,7 +88,12 @@ pub(crate) fn attach(child: &std::process::Child, prepared: &Prepared) -> Result
         if prepared.mode.is_some() {
             if prepared.is_root {
                 // Root: we set process_group(0) pre-spawn so pgid == pid.
-                let pgid = child.id() as i32;
+                let raw_pid = child.id();
+                debug_assert!(
+                    raw_pid <= i32::MAX as u32,
+                    "pid {raw_pid} exceeds i32::MAX; pgid cast would truncate"
+                );
+                let pgid = raw_pid as i32;
                 return Ok((Containment::ProcessGroup, Attached::ProcessGroup(pgid)));
             } else {
                 // Nested: joined the ancestor's group; kill_tree falls back to direct kill.

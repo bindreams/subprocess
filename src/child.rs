@@ -89,10 +89,12 @@ impl Child {
 
     /// Hard-kill the contained tree (or the lone process if uncontained).
     pub fn kill_tree(&self) -> Result<(), Error> {
-        self.attached.hard_kill();
+        let group_result = self.attached.hard_kill();
         // Also kill the direct child (covers the uncontained / nested-no-group case).
+        // Discard the direct-kill result: already-dead is Ok on all platforms, and
+        // an error here is superseded by a group-level error from hard_kill above.
         let _ = self.shared.kill();
-        Ok(())
+        group_result
     }
 
     /// Send the graceful termination signal to the contained group (signal-only;
