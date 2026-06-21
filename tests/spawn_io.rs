@@ -495,6 +495,82 @@ fn unix_terminate_tree_reaps_the_grandchild() {
 // both branches (marker absent → root, marker present → nested) without
 // touching process-global state.
 
+// Windows Job Object containment =====
+
+#[cfg(windows)]
+#[test]
+fn windows_kill_tree_reaps_the_grandchild() {
+    let (child, mut gc_stream) = spawn_contained_tree();
+    assert_eq!(child.containment(), subprocess::Containment::JobObject);
+
+    child.kill_tree().expect("kill_tree");
+    let _ = child.wait(); // reap the root
+
+    // Deterministic proof: the grandchild's control socket closes on its death.
+    // On Windows, TerminateJobObject causes the TCP socket to close with a
+    // ConnectionReset (WSAECONNRESET/10054) rather than a graceful EOF — both
+    // prove the grandchild is dead. Accept either: n==0 (EOF) or ConnectionReset.
+    let mut buf = [0u8; 1];
+    match gc_stream.read(&mut buf) {
+        Ok(0) => {}                                                     // graceful EOF — grandchild exited
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {} // forceful kill — also proof of death
+        Ok(n) => panic!("expected EOF/ConnectionReset after kill_tree, got {n} bytes"),
+        Err(e) => panic!("unexpected error reading grandchild control socket: {e}"),
+    }
+}
+
+/// Probe that our child is inside OUR job object (not just any job).
+/// Uses the test-only `Child::test_job_handle()` accessor so `IsProcessInJob`
+/// asks about the handle we created, not an inherited one.
+#[cfg(windows)]
+#[test]
+fn windows_child_is_inside_our_job_after_spawn() {
+    let (child, _gc_stream) = spawn_contained_tree();
+    assert_eq!(child.containment(), subprocess::Containment::JobObject);
+
+    // test_job_handle() is cfg(all(windows,test)) — confirms the job we hold.
+    let in_job = child.test_job_handle_contains_self();
+    assert!(in_job, "child must be inside our job object after spawn");
+
+    child.kill_tree().expect("kill_tree");
+    let _ = child.wait();
+}
+
+/// `detach()` must NOT kill the grandchild's process tree.
+/// Proof: the grandchild's control socket must stay open after detach. We
+/// prove liveness by writing a byte (which causes the grandchild's blocking
+/// `sock.read` to return 1, letting it exit cleanly) and then observing EOF —
+/// a voluntary, natural exit rather than a job-kill EOF. The critical ordering
+/// is: detach FIRST, then write. If KILL_ON_JOB_CLOSE fired on detach, the
+/// grandchild would already be dead and the write would fail with BrokenPipe.
+#[cfg(windows)]
+#[test]
+fn windows_detach_leaves_the_tree_running() {
+    let (child, mut gc_stream) = spawn_contained_tree();
+    assert_eq!(child.containment(), subprocess::Containment::JobObject);
+
+    // detach() must clear KILL_ON_JOB_CLOSE before closing the job handle.
+    child.detach();
+
+    // Send a byte to the grandchild's control socket. If KILL_ON_JOB_CLOSE
+    // fired during detach, the grandchild is dead and this write fails with
+    // BrokenPipe — a hard assertion failure, not a silent pass.
+    gc_stream
+        .write_all(b"p")
+        .expect("grandchild control socket must accept write after detach (tree still alive)");
+
+    // Grandchild received the byte (its blocking read returned 1) and exited
+    // voluntarily — confirm by waiting for EOF on the control socket.
+    let mut buf = [0u8; 1];
+    let n = gc_stream
+        .read(&mut buf)
+        .expect("read grandchild control socket after detach");
+    assert_eq!(
+        n, 0,
+        "expected EOF after grandchild exited voluntarily; if n=1, it is still alive (not an error but unexpected)"
+    );
+}
+
 // cgroup v2 integration test =====
 // Runs only on Linux, and only when the CI provisions a delegated cgroup
 // (SUBPROCESS_TEST_CGROUP=1). The env guard means this is a true no-op when

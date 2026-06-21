@@ -1,5 +1,6 @@
 //! Per-OS containment dispatch (two-phase: prepare before spawn, attach after).
-//! Unix process-group branch filled by Task 3; Linux cgroup v2 by Task 4.
+//! Unix process-group branch filled by Task 3; Linux cgroup v2 by Task 4;
+//! Windows Job Object by Task 5.
 
 use crate::containment::{ContainMode, ContainRequest, Containment, Nesting};
 use crate::error::Error;
@@ -29,7 +30,9 @@ pub(crate) enum Attached {
     ProcessGroup(i32), // pgid (== root pid)
     #[cfg(target_os = "linux")]
     Cgroup(crate::containment::cgroup::CgroupLeaf),
-    // Windows JobObject(..), TreeWalk(ProcessId) — later tasks.
+    #[cfg(windows)]
+    JobObject(crate::containment::windows::JobHandle),
+    // TreeWalk(ProcessId) — Task 7.
 }
 
 // CgroupLeaf is not Debug; provide a minimal impl.
@@ -54,31 +57,39 @@ impl Attached {
                 leaf.hard_kill();
                 Ok(())
             }
+            #[cfg(windows)]
+            Attached::JobObject(job) => {
+                job.hard_kill();
+                Ok(())
+            }
         }
     }
 
     /// Send the graceful termination signal to the group (signal-only).
-    pub(crate) fn terminate(&self) -> Result<(), Error> {
+    pub(crate) fn terminate(&self, _child_pid: u32) -> Result<(), Error> {
         match self {
             Attached::None => Ok(()),
             #[cfg(unix)]
             Attached::ProcessGroup(pgid) => crate::containment::unix::term_group(*pgid).map_err(Error::Io),
             #[cfg(target_os = "linux")]
             Attached::Cgroup(leaf) => leaf.terminate().map_err(Error::Io),
+            #[cfg(windows)]
+            Attached::JobObject(_) => crate::containment::windows::terminate(_child_pid).map_err(Error::Io),
         }
     }
 
-    /// Neutralize teardown so `detach()` leaves the tree running (e.g. clear a
-    /// Job's KILL_ON_JOB_CLOSE before its handle drops). No-op for mechanisms
-    /// whose resource-drop does not kill (pgroup/cgroup/treewalk/none).
-    #[allow(dead_code)] // used in Task 9 (tree teardown in Drop/detach)
-    pub(crate) fn disarm(&mut self) {
+    /// Neutralize teardown so `detach()` leaves the tree running. For Job Objects,
+    /// clears `KILL_ON_JOB_CLOSE` so the handle close does not kill the tree.
+    /// No-op for mechanisms whose resource-drop does not kill (pgroup/cgroup/none).
+    pub(crate) fn disarm(&self) {
         match self {
             Attached::None => {}
             #[cfg(unix)]
             Attached::ProcessGroup(_) => {} // pgroup drop doesn't kill — no-op
             #[cfg(target_os = "linux")]
-            Attached::Cgroup(_) => {} // cgroup drop doesn't kill the tree (cgroup.kill is explicit)
+            Attached::Cgroup(_) => {} // cgroup.kill is explicit — drop doesn't kill
+            #[cfg(windows)]
+            Attached::JobObject(job) => job.disarm(), // clear KILL_ON_JOB_CLOSE before handle drops
         }
     }
 }
@@ -155,6 +166,17 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
         crate::containment::unix::set_process_group(std_cmd);
     }
 
+    // Windows: clear handle inheritance + apply creation_flags.
+    #[cfg(windows)]
+    if mode.is_some() {
+        crate::containment::windows::clear_std_handle_inheritance();
+        if is_root {
+            crate::containment::windows::set_root_flags(std_cmd);
+        } else {
+            crate::containment::windows::set_group_flags(std_cmd);
+        }
+    }
+
     #[allow(unreachable_code)]
     Prepared {
         mode,
@@ -217,7 +239,25 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
         }
     }
 
-    // Uncontained (or non-Unix).
+    // Windows: Job Object (strongest available on this OS).
+    #[cfg(windows)]
+    {
+        if prepared.mode.is_some() && prepared.is_root {
+            match crate::containment::windows::attach_job(child) {
+                Ok(Some(job)) => return Ok((Containment::JobObject, Attached::JobObject(job))),
+                Ok(None) => {
+                    // Job assignment failed; degraded to lone-process (Task 7 wires TreeWalk).
+                    return Ok((Containment::None, Attached::None));
+                }
+                Err(e) => return Err(Error::Containment { detail: e.to_string() }),
+            }
+        } else if prepared.mode.is_some() {
+            // Nested: inherits the ancestor's job; no new job created.
+            return Ok((Containment::JobObject, Attached::None));
+        }
+    }
+
+    // Uncontained (or unsupported platform).
     let _ = (child, prepared);
     Ok((Containment::None, Attached::None))
 }

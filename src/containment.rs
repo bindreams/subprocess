@@ -101,6 +101,10 @@ pub(crate) mod unix;
 #[path = "containment/cgroup.rs"]
 pub(crate) mod cgroup;
 
+#[cfg(windows)]
+#[path = "containment/windows.rs"]
+pub(crate) mod windows;
+
 #[path = "containment/dispatch.rs"]
 pub(crate) mod dispatch;
 #[allow(unused_imports)]
