@@ -613,6 +613,39 @@ fn unix_session_containment_reports_session() {
     assert_eq!(n, 0, "session kill_tree must kill the grandchild, not just the root");
 }
 
+/// Prove that `ContainMode::Session` actually calls `setsid`: the child must
+/// report a session id that differs from the parent's (it became a session
+/// leader in a new session). This distinguishes real `setsid` from a plain
+/// `process_group(0)` which would share the parent's session.
+#[cfg(unix)]
+#[test]
+fn unix_session_child_is_own_session_leader() {
+    let parent_sid = unsafe { libc::getsid(0) };
+
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "sid-report"])
+        .stdout(Stdio::pipe())
+        .expect("stdout pipe")
+        .contain_with(subprocess::ContainMode::Session);
+    let mut child = cmd.spawn().expect("spawn sid-report");
+    assert_eq!(child.containment(), subprocess::Containment::Session);
+
+    let mut reader = child.stdout().expect("stdout reader");
+    let mut out = String::new();
+    reader.read_to_string(&mut out).expect("read sid");
+    drop(reader);
+    let _ = child.wait();
+
+    let child_sid: libc::pid_t = out.trim().parse().expect("parse sid");
+    // A setsid child's sid == its own pid; crucially it must differ from the
+    // parent's session id, proving a new session was created.
+    assert_ne!(
+        child_sid, parent_sid,
+        "child sid {child_sid} must differ from parent sid {parent_sid}: setsid must have run"
+    );
+}
+
 // cgroup v2 integration test =====
 // Runs only on Linux, and only when the CI provisions a delegated cgroup
 // (SUBPROCESS_TEST_CGROUP=1). The env guard means this is a true no-op when

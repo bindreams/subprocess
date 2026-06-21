@@ -101,6 +101,30 @@ pub(crate) fn is_nested(marker_present: bool) -> bool {
     marker_present
 }
 
+/// Which Unix setup action to apply to a root `Command` for a given mode.
+/// Pure function: used by `prepare` and unit-tested separately to verify
+/// mutual exclusivity (S3): Session → setsid only; anything else → pgroup only.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UnixSetup {
+    /// Apply `setsid` via `pre_exec` (ContainMode::Session). Must NOT be
+    /// combined with ProcessGroup on the same Command (EPERM on a session leader).
+    Session,
+    /// Apply `process_group(0)` (ContainMode::Strongest, TreeWalk, or default).
+    ProcessGroup,
+}
+
+/// Decide which Unix mechanism to apply for `mode` (root spawns only, S3).
+/// Keeping this as a pure function makes the mutual-exclusivity invariant
+/// directly unit-testable without inspecting `std::process::Command` internals.
+#[cfg(unix)]
+pub(crate) fn unix_setup_for(mode: Option<ContainMode>) -> UnixSetup {
+    match mode {
+        Some(ContainMode::Session) => UnixSetup::Session,
+        _ => UnixSetup::ProcessGroup,
+    }
+}
+
 /// Phase 1 (before spawn): env-marker root detection + pre-spawn OS setup.
 pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest) -> Prepared {
     let mode = req.mode;
@@ -121,25 +145,26 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
     }
 
     // Linux: session mode or (cgroup v2 + process group).
-    // ContainMode::Session on Linux applies setsid INSTEAD OF process_group(0)
-    // (S3 mutual exclusivity). For Strongest, always set a new process group;
-    // cgroup placement is in addition (cgroup.kill is atomic, process_group lets
-    // SIGTERM reach the group before kernel teardown).
+    // Mechanism selection via `unix_setup_for` (S3 mutual exclusivity):
+    // Session → setsid only; Strongest/TreeWalk → process_group(0) + try cgroup.
     #[cfg(target_os = "linux")]
     {
         if is_root && mode.is_some() {
-            if matches!(mode, Some(ContainMode::Session)) {
-                // Session: setsid only — no process_group(0) (would EPERM).
-                crate::containment::unix::set_session(std_cmd);
-                return Prepared {
-                    mode,
-                    is_root,
-                    cgroup_leaf: None, // cgroup not used for Session
-                };
+            match unix_setup_for(mode) {
+                UnixSetup::Session => {
+                    // Session: setsid only — no process_group(0) (would EPERM).
+                    crate::containment::unix::set_session(std_cmd);
+                    return Prepared {
+                        mode,
+                        is_root,
+                        cgroup_leaf: None, // cgroup not used for Session
+                    };
+                }
+                UnixSetup::ProcessGroup => {
+                    // Strongest / TreeWalk: set a new process group + try cgroup.
+                    crate::containment::unix::set_process_group(std_cmd);
+                }
             }
-
-            // Strongest / TreeWalk: set a new process group + try cgroup.
-            crate::containment::unix::set_process_group(std_cmd);
 
             let leaf = crate::containment::cgroup::try_create_leaf();
             if let Some(ref l) = leaf {
@@ -173,14 +198,13 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
     }
 
     // Non-Linux Unix: process group or session (mutually exclusive; S3).
-    // Session mode applies setsid INSTEAD OF process_group(0): setsid makes the
-    // child a session and process-group leader simultaneously, so setpgid would
-    // return EPERM. Strongest on non-Linux Unix = ProcessGroup (macOS path).
+    // Mechanism selection via `unix_setup_for`: Session → setsid only;
+    // Strongest (= ProcessGroup on macOS) → process_group(0).
     #[cfg(all(unix, not(target_os = "linux")))]
     if is_root && mode.is_some() {
-        match mode {
-            Some(ContainMode::Session) => crate::containment::unix::set_session(std_cmd),
-            _ => crate::containment::unix::set_process_group(std_cmd),
+        match unix_setup_for(mode) {
+            UnixSetup::Session => crate::containment::unix::set_session(std_cmd),
+            UnixSetup::ProcessGroup => crate::containment::unix::set_process_group(std_cmd),
         }
     }
 

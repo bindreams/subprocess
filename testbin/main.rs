@@ -99,6 +99,14 @@ fn main() {
             let mut buf = [0u8; 1];
             let _ = sock.read(&mut buf);
         }
+        #[cfg(unix)]
+        "sid-report" => {
+            // Print our session id (getsid(0)) to stdout so the test can verify
+            // setsid() actually ran and the child is its own session leader.
+            // Safety: getsid(0) has no preconditions and always succeeds for pid 0.
+            let sid = unsafe { libc::getsid(0) };
+            println!("{sid}");
+        }
         other => {
             eprintln!("subprocess_testbin: unknown mode {other:?}");
             exit(2);
