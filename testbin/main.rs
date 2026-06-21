@@ -24,8 +24,14 @@ fn main() {
         "emit" => {
             let n_out: usize = args[2].parse().unwrap();
             let n_err: usize = args[3].parse().unwrap();
-            std::io::stdout().write_all(&vec![b'o'; n_out]).unwrap();
-            std::io::stderr().write_all(&vec![b'e'; n_err]).unwrap();
+            // Flush explicitly: these bytes have no trailing newline, so the
+            // line-buffered Stdout would otherwise hold them until process exit.
+            let mut out = std::io::stdout().lock();
+            out.write_all(&vec![b'o'; n_out]).unwrap();
+            out.flush().unwrap();
+            let mut err = std::io::stderr().lock();
+            err.write_all(&vec![b'e'; n_err]).unwrap();
+            err.flush().unwrap();
         }
         "tee-both" => {
             // Copy stdin to BOTH stdout and stderr in a loop, so a parent that
