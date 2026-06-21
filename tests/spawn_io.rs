@@ -571,6 +571,48 @@ fn windows_detach_leaves_the_tree_running() {
     );
 }
 
+// Unix session containment =====
+
+/// Spawn a contained tree using `ContainMode::Session` and return the handles.
+/// This is separate from `spawn_contained_tree` (which uses `contain()` =
+/// `Strongest`) so the two modes are tested independently.
+#[cfg(unix)]
+fn spawn_session_tree() -> (subprocess::Child, std::net::TcpStream) {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind control listener");
+    let addr = listener.local_addr().unwrap().to_string();
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "spawn-grandchild", &addr]);
+    cmd.contain_with(subprocess::ContainMode::Session);
+    let child = cmd.spawn().expect("spawn session-contained tree");
+    let mut gc = None;
+    for _ in 0..2 {
+        let (mut s, _) = listener.accept().expect("accept control conn");
+        let mut tag = [0u8; 1];
+        s.read_exact(&mut tag).expect("read tag");
+        if tag[0] == b'G' {
+            gc = Some(s);
+        }
+    }
+    (child, gc.expect("grandchild connected"))
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_session_containment_reports_session() {
+    let (child, mut gc_stream) = spawn_session_tree();
+    assert_eq!(child.containment(), subprocess::Containment::Session);
+
+    child.kill_tree().expect("kill_tree");
+    let _ = child.wait();
+
+    // Deterministic proof: grandchild's control socket EOFs on its death.
+    let mut buf = [0u8; 1];
+    let n = gc_stream.read(&mut buf).expect("read grandchild control socket");
+    assert_eq!(n, 0, "session kill_tree must kill the grandchild, not just the root");
+}
+
 // cgroup v2 integration test =====
 // Runs only on Linux, and only when the CI provisions a delegated cgroup
 // (SUBPROCESS_TEST_CGROUP=1). The env guard means this is a true no-op when

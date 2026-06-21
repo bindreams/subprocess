@@ -58,6 +58,24 @@ pub enum ContainMode {
     /// Identity-aware process-tree walk at teardown — selectable directly (e.g.
     /// for a child known to `setsid` out of a process group).
     TreeWalk,
+    /// Unix session containment via `setsid`: the child becomes a session leader
+    /// and process-group leader, detached from any controlling terminal.
+    /// Teardown sends `SIGKILL`/`SIGTERM` to the process group (which equals the
+    /// session's initial process group). Useful for daemon-like children that
+    /// must not inherit the parent's controlling terminal.
+    ///
+    /// **Mutual exclusivity:** `setsid` makes the child a session *and*
+    /// process-group leader simultaneously; `setpgid`/`process_group(0)` on a
+    /// session leader fails with `EPERM`. Therefore `Session` applies `setsid`
+    /// *instead of* `process_group(0)` — never both.
+    ///
+    /// **Self-`setsid` escape:** a child that calls `setsid` itself (or
+    /// `setpgid`) can leave the session. This is documented and applies equally
+    /// to `ProcessGroup` containment. `Session` provides TTY detach and
+    /// session grouping; it is not a security sandbox.
+    ///
+    /// On non-Unix platforms this request is silently treated as `Strongest`.
+    Session,
 }
 
 /// Whether a kill-group root marks its descendants as already-contained.

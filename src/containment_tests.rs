@@ -19,3 +19,9 @@ fn nesting_defaults_to_mark() {
 fn contain_modes_are_distinct() {
     assert_ne!(ContainMode::Strongest, ContainMode::TreeWalk);
 }
+
+#[test]
+fn contain_mode_session_is_distinct_from_strongest_and_treewalk() {
+    assert_ne!(ContainMode::Session, ContainMode::Strongest);
+    assert_ne!(ContainMode::Session, ContainMode::TreeWalk);
+}

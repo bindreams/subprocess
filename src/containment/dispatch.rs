@@ -120,13 +120,25 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
         std_cmd.env(crate::containment::NESTED_ENV, "1");
     }
 
-    // Linux: try cgroup v2 first; fall back to process group.
+    // Linux: session mode or (cgroup v2 + process group).
+    // ContainMode::Session on Linux applies setsid INSTEAD OF process_group(0)
+    // (S3 mutual exclusivity). For Strongest, always set a new process group;
+    // cgroup placement is in addition (cgroup.kill is atomic, process_group lets
+    // SIGTERM reach the group before kernel teardown).
     #[cfg(target_os = "linux")]
     {
         if is_root && mode.is_some() {
-            // Always set a new process group (the cgroup placement is in addition,
-            // not a replacement: cgroup.kill is atomic, but process_group(0) lets
-            // us send SIGTERM to the group before kernel teardown).
+            if matches!(mode, Some(ContainMode::Session)) {
+                // Session: setsid only — no process_group(0) (would EPERM).
+                crate::containment::unix::set_session(std_cmd);
+                return Prepared {
+                    mode,
+                    is_root,
+                    cgroup_leaf: None, // cgroup not used for Session
+                };
+            }
+
+            // Strongest / TreeWalk: set a new process group + try cgroup.
             crate::containment::unix::set_process_group(std_cmd);
 
             let leaf = crate::containment::cgroup::try_create_leaf();
@@ -160,10 +172,16 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
         };
     }
 
-    // Non-Linux Unix: process group only.
+    // Non-Linux Unix: process group or session (mutually exclusive; S3).
+    // Session mode applies setsid INSTEAD OF process_group(0): setsid makes the
+    // child a session and process-group leader simultaneously, so setpgid would
+    // return EPERM. Strongest on non-Linux Unix = ProcessGroup (macOS path).
     #[cfg(all(unix, not(target_os = "linux")))]
     if is_root && mode.is_some() {
-        crate::containment::unix::set_process_group(std_cmd);
+        match mode {
+            Some(ContainMode::Session) => crate::containment::unix::set_session(std_cmd),
+            _ => crate::containment::unix::set_process_group(std_cmd),
+        }
     }
 
     // Windows: clear handle inheritance + apply creation_flags.
@@ -190,7 +208,7 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
 /// Consumes `prepared` so Linux cgroup leaf ownership transfers cleanly to
 /// `Attached::Cgroup` without requiring interior mutability.
 pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<(Containment, Attached), Error> {
-    // Linux: cgroup v2 if available, else process group.
+    // Linux: session, or cgroup v2 / process group.
     #[cfg(target_os = "linux")]
     {
         if prepared.mode.is_some() {
@@ -200,6 +218,15 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                     raw_pid <= i32::MAX as u32,
                     "pid {raw_pid} exceeds i32::MAX; pgid cast would truncate"
                 );
+                let pgid = raw_pid as i32;
+
+                // Session mode: setsid was applied pre-spawn; no cgroup (S3).
+                // pgid == sid == pid for the session leader; killpg works.
+                if matches!(prepared.mode, Some(ContainMode::Session)) {
+                    return Ok((Containment::Session, Attached::ProcessGroup(pgid)));
+                }
+
+                // Strongest / TreeWalk: cgroup v2 if available, else process group.
                 if let Some(leaf) = prepared.cgroup_leaf {
                     // Verify placement: the pre_exec write can silently fail
                     // (EBUSY — "no internal processes" rule when the supervisor
@@ -211,10 +238,10 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                     // Placement failed — the leaf is empty; drop it (triggers
                     // rmdir). The process group set pre-spawn is the real container.
                     drop(leaf);
-                    return Ok((Containment::ProcessGroup, Attached::ProcessGroup(raw_pid as i32)));
+                    return Ok((Containment::ProcessGroup, Attached::ProcessGroup(pgid)));
                 }
                 // No cgroup leaf: fall back to process group (set pre-spawn).
-                return Ok((Containment::ProcessGroup, Attached::ProcessGroup(raw_pid as i32)));
+                return Ok((Containment::ProcessGroup, Attached::ProcessGroup(pgid)));
             } else {
                 // Nested: joined the ancestor's group.
                 return Ok((Containment::ProcessGroup, Attached::None));
@@ -222,7 +249,11 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
         }
     }
 
-    // Non-Linux Unix: process group.
+    // Non-Linux Unix: process group or session.
+    // For Session: setsid was called pre-spawn (not process_group(0)); the child
+    // is a session leader with pgid == pid. Teardown via killpg is identical —
+    // Attached::ProcessGroup(pgid) is reused since the pgroup == session leader's pid.
+    // For Strongest (= ProcessGroup on macOS): process_group(0) was called pre-spawn.
     #[cfg(all(unix, not(target_os = "linux")))]
     {
         if prepared.mode.is_some() {
@@ -232,8 +263,14 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                     raw_pid <= i32::MAX as u32,
                     "pid {raw_pid} exceeds i32::MAX; pgid cast would truncate"
                 );
-                return Ok((Containment::ProcessGroup, Attached::ProcessGroup(raw_pid as i32)));
+                let pgid = raw_pid as i32;
+                let containment = match prepared.mode {
+                    Some(ContainMode::Session) => Containment::Session,
+                    _ => Containment::ProcessGroup,
+                };
+                return Ok((containment, Attached::ProcessGroup(pgid)));
             } else {
+                // Nested: joined the ancestor's group/session.
                 return Ok((Containment::ProcessGroup, Attached::None));
             }
         }
