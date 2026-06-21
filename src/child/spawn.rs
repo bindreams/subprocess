@@ -94,7 +94,8 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     // We own the std Child so containment can job-assign + resume it (Task 5).
     let child = std_cmd.spawn().map_err(Error::Io)?;
     // Phase 2 (after spawn, before adopt): attach the mechanism (job/cgroup/...).
-    let (containment, attached) = crate::containment::attach(&child, &prepared)?;
+    // `prepared` is consumed here: Linux cgroup leaf ownership moves to Attached::Cgroup.
+    let (containment, attached) = crate::containment::attach(&child, prepared)?;
     // Adopt AFTER resume so SharedChild::new sees a live (resumed) child; the
     // whole Plan-3 wait/kill/identity/pump model is preserved.
     let shared = SharedChild::new(child).map_err(Error::Io)?;

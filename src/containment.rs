@@ -98,6 +98,9 @@ pub(crate) const NESTED_ENV: &str = "__SUBPROCESS_GROUP_ROOT";
 #[path = "containment/unix.rs"]
 pub(crate) mod unix;
 
+#[path = "containment/cgroup.rs"]
+pub(crate) mod cgroup;
+
 #[path = "containment/dispatch.rs"]
 pub(crate) mod dispatch;
 #[allow(unused_imports)]

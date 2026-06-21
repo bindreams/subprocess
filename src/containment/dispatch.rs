@@ -1,5 +1,5 @@
 //! Per-OS containment dispatch (two-phase: prepare before spawn, attach after).
-//! Unix process-group branch filled by Task 3.
+//! Unix process-group branch filled by Task 3; Linux cgroup v2 by Task 4.
 
 use crate::containment::{ContainMode, ContainRequest, Containment, Nesting};
 use crate::error::Error;
@@ -11,6 +11,11 @@ pub(crate) struct Prepared {
     pub mode: Option<ContainMode>,
     #[allow(dead_code)] // read in #[cfg(unix)] branch of attach()
     pub is_root: bool,
+    /// Pre-created cgroup leaf (Linux only). `Some` means the child must be
+    /// placed in the cgroup via the `pre_exec` closure; `None` means fall back
+    /// to the process-group mechanism.
+    #[cfg(target_os = "linux")]
+    pub cgroup_leaf: Option<crate::containment::cgroup::CgroupLeaf>,
 }
 
 /// Owns the OS containment resource for a spawned child; `hard_kill`/`terminate`
@@ -22,7 +27,17 @@ pub(crate) enum Attached {
     None,
     #[cfg(unix)]
     ProcessGroup(i32), // pgid (== root pid)
-                       // Windows JobObject(..), Unix Cgroup(..), TreeWalk(ProcessId) — later tasks.
+    #[cfg(target_os = "linux")]
+    Cgroup(crate::containment::cgroup::CgroupLeaf),
+    // Windows JobObject(..), TreeWalk(ProcessId) — later tasks.
+}
+
+// CgroupLeaf is not Debug; provide a minimal impl.
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for crate::containment::cgroup::CgroupLeaf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CgroupLeaf").finish_non_exhaustive()
+    }
 }
 
 impl Attached {
@@ -34,6 +49,11 @@ impl Attached {
             Attached::ProcessGroup(pgid) => {
                 crate::containment::unix::kill_group(*pgid).map_err(crate::error::Error::Io)
             }
+            #[cfg(target_os = "linux")]
+            Attached::Cgroup(leaf) => {
+                leaf.hard_kill();
+                Ok(())
+            }
         }
     }
 
@@ -43,6 +63,8 @@ impl Attached {
             Attached::None => Ok(()),
             #[cfg(unix)]
             Attached::ProcessGroup(pgid) => crate::containment::unix::term_group(*pgid).map_err(Error::Io),
+            #[cfg(target_os = "linux")]
+            Attached::Cgroup(leaf) => leaf.terminate().map_err(Error::Io),
         }
     }
 
@@ -55,6 +77,8 @@ impl Attached {
             Attached::None => {}
             #[cfg(unix)]
             Attached::ProcessGroup(_) => {} // pgroup drop doesn't kill — no-op
+            #[cfg(target_os = "linux")]
+            Attached::Cgroup(_) => {} // cgroup drop doesn't kill the tree (cgroup.kill is explicit)
         }
     }
 }
@@ -73,6 +97,8 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
         return Prepared {
             mode: None,
             is_root: false,
+            #[cfg(target_os = "linux")]
+            cgroup_leaf: None,
         };
     }
     let marker_present = std::env::var_os(crate::containment::NESTED_ENV).is_some();
@@ -82,33 +108,105 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
         // the spawn engine, so the marker survives env_clear (N1). `env` appends.
         std_cmd.env(crate::containment::NESTED_ENV, "1");
     }
-    #[cfg(unix)]
-    if is_root && mode.is_some() {
-        crate::containment::unix::set_process_group(std_cmd); // cgroup (Task 4) may upgrade the achieved mode
+
+    // Linux: try cgroup v2 first; fall back to process group.
+    #[cfg(target_os = "linux")]
+    {
+        if is_root && mode.is_some() {
+            // Always set a new process group (the cgroup placement is in addition,
+            // not a replacement: cgroup.kill is atomic, but process_group(0) lets
+            // us send SIGTERM to the group before kernel teardown).
+            crate::containment::unix::set_process_group(std_cmd);
+
+            let leaf = crate::containment::cgroup::try_create_leaf();
+            if let Some(ref l) = leaf {
+                // Wire the pre_exec self-placement. The closure captures the raw
+                // fd integer (Copy) — not the leaf itself (which stays in Prepared).
+                // On error (e.g. EBUSY — "no internal processes" rule), the closure
+                // returns Ok so the spawn proceeds and `attach` falls back to the
+                // already-configured process group rather than aborting the spawn.
+                // Safety: pre_exec runs post-fork, pre-exec; the function is
+                // async-signal-safe (libc::write + libc::close, no alloc).
+                let procs_fd = l.procs_fd();
+                unsafe {
+                    use std::os::unix::process::CommandExt;
+                    std_cmd.pre_exec(move || {
+                        let _ = crate::containment::cgroup::place_self_in_cgroup_pre_exec(procs_fd);
+                        Ok(())
+                    });
+                }
+            }
+            return Prepared {
+                mode,
+                is_root,
+                cgroup_leaf: leaf,
+            };
+        }
+        return Prepared {
+            mode,
+            is_root,
+            cgroup_leaf: None,
+        };
     }
-    Prepared { mode, is_root }
+
+    // Non-Linux Unix: process group only.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    if is_root && mode.is_some() {
+        crate::containment::unix::set_process_group(std_cmd);
+    }
+
+    #[allow(unreachable_code)]
+    Prepared {
+        mode,
+        is_root,
+        #[cfg(target_os = "linux")]
+        cgroup_leaf: None,
+    }
 }
 
 /// Phase 2 (after spawn, before SharedChild::new): attach the mechanism.
-pub(crate) fn attach(child: &std::process::Child, prepared: &Prepared) -> Result<(Containment, Attached), Error> {
-    #[cfg(unix)]
+/// Consumes `prepared` so Linux cgroup leaf ownership transfers cleanly to
+/// `Attached::Cgroup` without requiring interior mutability.
+pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<(Containment, Attached), Error> {
+    // Linux: cgroup v2 if available, else process group.
+    #[cfg(target_os = "linux")]
     {
         if prepared.mode.is_some() {
             if prepared.is_root {
-                // Root: we set process_group(0) pre-spawn so pgid == pid.
                 let raw_pid = child.id();
                 debug_assert!(
                     raw_pid <= i32::MAX as u32,
                     "pid {raw_pid} exceeds i32::MAX; pgid cast would truncate"
                 );
-                let pgid = raw_pid as i32;
-                return Ok((Containment::ProcessGroup, Attached::ProcessGroup(pgid)));
+                if let Some(leaf) = prepared.cgroup_leaf {
+                    return Ok((Containment::CgroupV2, Attached::Cgroup(leaf)));
+                }
+                // No cgroup leaf: fall back to process group (set pre-spawn).
+                return Ok((Containment::ProcessGroup, Attached::ProcessGroup(raw_pid as i32)));
             } else {
-                // Nested: joined the ancestor's group; kill_tree falls back to direct kill.
+                // Nested: joined the ancestor's group.
                 return Ok((Containment::ProcessGroup, Attached::None));
             }
         }
     }
+
+    // Non-Linux Unix: process group.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        if prepared.mode.is_some() {
+            if prepared.is_root {
+                let raw_pid = child.id();
+                debug_assert!(
+                    raw_pid <= i32::MAX as u32,
+                    "pid {raw_pid} exceeds i32::MAX; pgid cast would truncate"
+                );
+                return Ok((Containment::ProcessGroup, Attached::ProcessGroup(raw_pid as i32)));
+            } else {
+                return Ok((Containment::ProcessGroup, Attached::None));
+            }
+        }
+    }
+
     // Uncontained (or non-Unix).
     let _ = (child, prepared);
     Ok((Containment::None, Attached::None))

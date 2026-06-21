@@ -494,3 +494,37 @@ fn unix_terminate_tree_reaps_the_grandchild() {
 // `dispatch::is_nested` in `src/containment/dispatch_tests.rs`, which covers
 // both branches (marker absent → root, marker present → nested) without
 // touching process-global state.
+
+// cgroup v2 integration test =====
+// Runs only on Linux, and only when the CI provisions a delegated cgroup
+// (SUBPROCESS_TEST_CGROUP=1). The env guard means this is a true no-op when
+// unprovisioned, but FAILS loudly when the marker is set but the cgroup is
+// unavailable (the test asserts CgroupV2, so it won't silently pass).
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_cgroup_v2_kill_tree_reaps_the_grandchild() {
+    if std::env::var_os("SUBPROCESS_TEST_CGROUP").is_none() {
+        // Unprovisioned: skip (not CI-cgroup environment). The live cgroup test
+        // requires SUBPROCESS_TEST_CGROUP=1 and a delegated cgroup slice.
+        return;
+    }
+    // SUBPROCESS_TEST_CGROUP is set: a usable delegated cgroup must exist.
+    // If try_create_leaf() returns None, containment falls back to ProcessGroup
+    // and the assert below will fail loudly — that's intentional.
+    let (child, mut gc_stream) = spawn_contained_tree();
+    assert_eq!(
+        child.containment(),
+        subprocess::Containment::CgroupV2,
+        "expected CgroupV2 containment but got {:?}; \
+         is a delegated cgroup v2 slice available?",
+        child.containment()
+    );
+
+    child.kill_tree().expect("kill_tree");
+    let _ = child.wait(); // reap the root
+
+    // Deterministic proof: the grandchild's control socket EOFs on its death.
+    let mut buf = [0u8; 1];
+    let n = gc_stream.read(&mut buf).expect("read grandchild control socket");
+    assert_eq!(n, 0, "cgroup.kill must kill the grandchild, not just the root");
+}
