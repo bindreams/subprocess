@@ -1,4 +1,6 @@
 use crate::command::{Command, CommandInput};
+use crate::stdio::{Direction, ResolvedStdio, Stdio};
+use crate::Fd;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -60,4 +62,58 @@ fn executable_overrides_load_path_independently_of_argv() {
     cmd.executable("/bin/busybox").args(["sh", "-c", "echo hi"]);
     assert_eq!(cmd.executable_path(), Some(Path::new("/bin/busybox")));
     assert_eq!(argv(&cmd), ["sh", "-c", "echo hi"]);
+}
+
+#[test]
+fn stdout_shorthand_records_resolved_pipe_out() {
+    let mut cmd = Command::new();
+    cmd.args(["x"]);
+    cmd.stdout(Stdio::pipe()).unwrap();
+    let fds = cmd.fds();
+    assert!(matches!(
+        fds.get(&Fd::STDOUT),
+        Some(ResolvedStdio::Pipe(Direction::Out))
+    ));
+}
+
+#[test]
+fn stdin_pipe_infers_in() {
+    let mut cmd = Command::new();
+    cmd.stdin(Stdio::pipe()).unwrap();
+    assert!(matches!(
+        cmd.fds().get(&Fd::STDIN),
+        Some(ResolvedStdio::Pipe(Direction::In))
+    ));
+}
+
+#[test]
+fn bare_pipe_on_fd3_errs_at_attach() {
+    let mut cmd = Command::new();
+    assert!(cmd.fd(3, Stdio::pipe()).is_err());
+}
+
+#[test]
+fn explicit_pipe_out_on_fd3_attaches() {
+    let mut cmd = Command::new();
+    cmd.fd(3, Stdio::pipe_out()).unwrap();
+    assert!(matches!(
+        cmd.fds().get(&Fd::from(3)),
+        Some(ResolvedStdio::Pipe(Direction::Out))
+    ));
+}
+
+#[test]
+fn kill_on_drop_defaults_true_and_toggles() {
+    let mut cmd = Command::new();
+    assert!(cmd.kill_on_drop_flag());
+    cmd.kill_on_drop(false);
+    assert!(!cmd.kill_on_drop_flag());
+}
+
+#[test]
+fn env_and_cwd_recorded() {
+    let mut cmd = Command::new();
+    cmd.env("K", "V").current_dir("/tmp");
+    assert!(cmd.cwd().is_some());
+    // env_ops detail is exercised end-to-end in the spawn integration tests.
 }
