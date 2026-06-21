@@ -3,6 +3,14 @@
 //! `killpg`. cgroup v2 (Task 4) preempts this when available; this is the
 //! universal Unix fallback and the macOS path.
 //! Parent-side signals use `nix` (not hand-rolled `libc`); see Global Constraints.
+//!
+//! # PGID-reuse caveat
+//! `kill_tree` must run *before* the leader is reaped (`wait`): once reaped, the
+//! kernel may recycle the leader's PID/PGID, so `killpg` could signal an
+//! unrelated process group. The crate's `Drop` kills before it reaps, so the
+//! common path is safe; an explicit `wait()` then `kill_tree()` is the unsafe
+//! ordering. cgroup v2 and the identity-reverifying TreeWalk mechanism do not
+//! have this hole — prefer them when the guarantee matters.
 
 use std::io;
 

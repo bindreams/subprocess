@@ -488,46 +488,9 @@ fn unix_terminate_tree_reaps_the_grandchild() {
     assert_eq!(n, 0, "terminate_tree must SIGTERM the grandchild, not just the root");
 }
 
-#[cfg(unix)]
-#[test]
-fn unix_nested_contained_spawn_reports_process_group() {
-    // A nested spawn (inside an already-contained process) must report
-    // ProcessGroup containment (it joined the ancestor's group) even though
-    // Attached::None is stored (no independent teardown resource).
-    use std::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let addr = listener.local_addr().unwrap().to_string();
-
-    // Root contained process.
-    let mut cmd = Command::new();
-    cmd.executable(testbin())
-        .args(["subprocess_testbin", "control-block", &addr, "R"]);
-    cmd.contain();
-    let root = cmd.spawn().expect("spawn root");
-    assert_eq!(root.containment(), subprocess::Containment::ProcessGroup);
-
-    // Simulate nested: spawn a second contained command from this test process
-    // BUT with the NESTED_ENV marker already set (as the child would see it).
-    // We set it in the test process's own env temporarily.
-    std::env::set_var("__SUBPROCESS_GROUP_ROOT", "1");
-    let mut nested_cmd = Command::new();
-    nested_cmd
-        .executable(testbin())
-        .args(["subprocess_testbin", "control-block", &addr, "N"]);
-    nested_cmd.contain();
-    let nested = nested_cmd.spawn().expect("spawn nested");
-    std::env::remove_var("__SUBPROCESS_GROUP_ROOT");
-
-    assert_eq!(
-        nested.containment(),
-        subprocess::Containment::ProcessGroup,
-        "nested contained spawn must still report ProcessGroup"
-    );
-
-    // Drain both control connections before dropping.
-    for _ in 0..2 {
-        let _ = listener.accept();
-    }
-    drop(root);
-    drop(nested);
-}
+// unix_nested_contained_spawn_reports_process_group was removed: it used
+// std::env::set_var (thread-unsafe, deprecated in Rust 1.81+) to simulate a
+// nested spawn.  The nesting logic is now tested at the unit level via
+// `dispatch::is_nested` in `src/containment/dispatch_tests.rs`, which covers
+// both branches (marker absent → root, marker present → nested) without
+// touching process-global state.

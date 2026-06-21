@@ -59,6 +59,13 @@ impl Attached {
     }
 }
 
+/// Returns `true` when the current process is the outermost contained root
+/// (i.e. the env marker is absent). Pure function: takes the marker-presence
+/// flag so it can be unit-tested without touching the process environment.
+pub(crate) fn is_nested(marker_present: bool) -> bool {
+    marker_present
+}
+
 /// Phase 1 (before spawn): env-marker root detection + pre-spawn OS setup.
 pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest) -> Prepared {
     let mode = req.mode;
@@ -68,7 +75,8 @@ pub(crate) fn prepare(std_cmd: &mut std::process::Command, req: &ContainRequest)
             is_root: false,
         };
     }
-    let is_root = std::env::var_os(crate::containment::NESTED_ENV).is_none();
+    let marker_present = std::env::var_os(crate::containment::NESTED_ENV).is_some();
+    let is_root = !is_nested(marker_present);
     if is_root && req.nesting == Nesting::Mark {
         // Set AFTER any user env ops (env_clear) have been applied to std_cmd by
         // the spawn engine, so the marker survives env_clear (N1). `env` appends.
@@ -105,3 +113,7 @@ pub(crate) fn attach(child: &std::process::Child, prepared: &Prepared) -> Result
     let _ = (child, prepared);
     Ok((Containment::None, Attached::None))
 }
+
+#[cfg(test)]
+#[path = "dispatch_tests.rs"]
+mod dispatch_tests;
