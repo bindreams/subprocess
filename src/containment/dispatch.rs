@@ -179,7 +179,17 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                     "pid {raw_pid} exceeds i32::MAX; pgid cast would truncate"
                 );
                 if let Some(leaf) = prepared.cgroup_leaf {
-                    return Ok((Containment::CgroupV2, Attached::Cgroup(leaf)));
+                    // Verify placement: the pre_exec write can silently fail
+                    // (EBUSY — "no internal processes" rule when the supervisor
+                    // is itself an undelegated leaf). Read cgroup.procs to
+                    // confirm the child's pid is actually present.
+                    if leaf.contains_pid(raw_pid) {
+                        return Ok((Containment::CgroupV2, Attached::Cgroup(leaf)));
+                    }
+                    // Placement failed — the leaf is empty; drop it (triggers
+                    // rmdir). The process group set pre-spawn is the real container.
+                    drop(leaf);
+                    return Ok((Containment::ProcessGroup, Attached::ProcessGroup(raw_pid as i32)));
                 }
                 // No cgroup leaf: fall back to process group (set pre-spawn).
                 return Ok((Containment::ProcessGroup, Attached::ProcessGroup(raw_pid as i32)));

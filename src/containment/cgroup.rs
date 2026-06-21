@@ -24,8 +24,8 @@
 //! are raw `libc::write` + `libc::close` — no allocation, no `format!`, no
 //! `String`.
 
-// parse_v2_relative_path is pure (no OS deps) — compiled on all platforms so
-// it can be unit-tested on the Windows dev host.
+// parse_v2_relative_path and cgroup_procs_contains are pure (no OS deps) —
+// compiled on all platforms so their unit tests run on the Windows dev host.
 
 /// Parse the `0::` (cgroup v2 unified hierarchy) line from the contents of
 /// `/proc/self/cgroup`. Returns the relative path (e.g. `/user.slice/…`) on
@@ -46,6 +46,24 @@ pub(crate) fn parse_v2_relative_path(proc_self_cgroup: &str) -> Option<&str> {
     None
 }
 
+/// Check whether `pid` appears in the contents of a `cgroup.procs` file.
+/// The file format is one pid per line (decimal, possibly with trailing
+/// whitespace/newline); blank lines are skipped.
+///
+/// Pure function (no I/O); intentionally compiled on all platforms so the unit
+/// tests in `cgroup_tests.rs` run on the Windows dev host.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn cgroup_procs_contains(contents: &str, pid: u32) -> bool {
+    for line in contents.lines() {
+        if let Ok(p) = line.trim().parse::<u32>() {
+            if p == pid {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 // Everything below is Linux-only. =====
 
 #[cfg(target_os = "linux")]
@@ -56,6 +74,13 @@ use std::io;
 use std::os::fd::{IntoRawFd, RawFd};
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Process-wide monotonic counter; combined with the pid, gives a unique leaf
+/// name even when the same process spawns on multiple threads simultaneously.
+#[cfg(target_os = "linux")]
+static SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "linux")]
 use nix::sys::signal::{kill, Signal};
@@ -91,6 +116,15 @@ impl CgroupLeaf {
     /// Returns the raw `cgroup.procs` fd for capture in a `pre_exec` closure.
     pub(crate) fn procs_fd(&self) -> RawFd {
         self.procs_fd
+    }
+
+    /// Returns `true` when `pid` is listed in `cgroup.procs` of this leaf.
+    /// Used post-spawn (parent side) to confirm placement succeeded.
+    pub(crate) fn contains_pid(&self, pid: u32) -> bool {
+        match fs::read_to_string(self.leaf_path.join("cgroup.procs")) {
+            Ok(contents) => cgroup_procs_contains(&contents, pid),
+            Err(_) => false,
+        }
     }
 
     /// Hard-kill all processes in the cgroup via `cgroup.kill` (kernel ≥ 5.14).
@@ -151,9 +185,12 @@ pub(crate) fn try_create_leaf() -> Option<CgroupLeaf> {
 
     let current = Path::new("/sys/fs/cgroup").join(rel_path.trim_start_matches('/'));
 
-    // Unique leaf name per-pid avoids collisions between concurrent spawns.
+    // Unique leaf name: pid + monotonic sequence counter avoids collisions when
+    // the same process spawns on multiple threads simultaneously (same pid, but
+    // different seq values mean different leaf names).
     // Safety: getpid() is always valid.
-    let leaf_name = format!("subprocess-{}", unsafe { libc::getpid() });
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let leaf_name = format!("subprocess-{}-{}", unsafe { libc::getpid() }, seq);
     let leaf_path = current.join(&leaf_name);
 
     fs::create_dir(&leaf_path).ok()?;

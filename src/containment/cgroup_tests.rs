@@ -1,7 +1,7 @@
-// Pure-parser tests for cgroup v2 path detection.
+// Pure-parser tests for cgroup v2 path detection and cgroup.procs membership.
 // These run on any host (including Windows) with synthetic inputs — no filesystem access.
 
-use super::parse_v2_relative_path;
+use super::{cgroup_procs_contains, parse_v2_relative_path};
 
 // parse_v2_relative_path tests =====
 
@@ -31,9 +31,9 @@ fn v2_hybrid_with_v1_controllers() {
     );
 }
 
-/// v2 `0::` line with an empty path (rare: root cgroup) — returns the empty path.
+/// v2 `0::` line with path `"/"` (root cgroup) — returns the root path.
 #[test]
-fn v2_root_cgroup_empty_path() {
+fn v2_root_cgroup_path() {
     let input = "0::/\n";
     assert_eq!(parse_v2_relative_path(input), Some("/"));
 }
@@ -78,4 +78,50 @@ fn v2_line_not_first() {
 fn v2_no_trailing_newline() {
     let input = "0::/user.slice/user-1000.slice";
     assert_eq!(parse_v2_relative_path(input), Some("/user.slice/user-1000.slice"));
+}
+
+// cgroup_procs_contains tests -----
+
+/// Empty file contents — pid is absent.
+#[test]
+fn procs_empty_file() {
+    assert!(!cgroup_procs_contains("", 1234));
+}
+
+/// Single pid that matches.
+#[test]
+fn procs_single_match() {
+    assert!(cgroup_procs_contains("1234\n", 1234));
+}
+
+/// Single pid that does not match.
+#[test]
+fn procs_single_no_match() {
+    assert!(!cgroup_procs_contains("5678\n", 1234));
+}
+
+/// Multiple pids; target is present.
+#[test]
+fn procs_multiple_present() {
+    let contents = "100\n200\n1234\n300\n";
+    assert!(cgroup_procs_contains(contents, 1234));
+}
+
+/// Multiple pids; target is absent.
+#[test]
+fn procs_multiple_absent() {
+    let contents = "100\n200\n300\n";
+    assert!(!cgroup_procs_contains(contents, 1234));
+}
+
+/// Trailing newline at end of file — should not cause a false negative.
+#[test]
+fn procs_trailing_newline() {
+    assert!(cgroup_procs_contains("42\n", 42));
+}
+
+/// Whitespace around the pid (e.g. spaces) is trimmed.
+#[test]
+fn procs_whitespace_trimmed() {
+    assert!(cgroup_procs_contains("  99  \n", 99));
 }
