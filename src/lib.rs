@@ -7,6 +7,8 @@
 pub mod error;
 pub mod identity;
 pub mod quote;
+pub mod stdio;
+pub use stdio::{Fd, Stdio};
 
 mod command;
 pub use command::Command;

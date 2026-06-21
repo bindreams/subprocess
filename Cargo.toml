@@ -7,6 +7,9 @@ description = "Unified cross-platform subprocess management: spawning, stdio, pr
 license = "MIT OR Apache-2.0"
 publish = false           # working name; not yet published
 
+[features]
+pty = []
+
 [dependencies]
 thiserror = "2"
 
