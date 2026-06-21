@@ -207,6 +207,34 @@ impl Command {
     }
 }
 
+impl Command {
+    /// Run to completion capturing stdout+stderr (stdin is connected to null).
+    pub fn output(&mut self) -> Result<crate::Output, Error> {
+        self.stdin(crate::Stdio::null())?;
+        self.stdout(crate::Stdio::pipe())?;
+        self.stderr(crate::Stdio::pipe())?;
+        let mut child = self.spawn()?;
+        child.communicate(None)
+    }
+
+    /// Run to completion with inherited stdio, returning the exit status.
+    pub fn status(&mut self) -> Result<crate::ExitStatus, Error> {
+        let child = self.spawn()?;
+        child.wait()
+    }
+
+    /// Run to completion capturing stdout as a UTF-8 String (stdin=null,
+    /// stderr inherited). Errors on invalid UTF-8; output is verbatim (no trim).
+    pub fn read(&mut self) -> Result<String, Error> {
+        self.stdin(crate::Stdio::null())?;
+        self.stdout(crate::Stdio::pipe())?;
+        // stderr left at its default (inherit).
+        let mut child = self.spawn()?;
+        let out = child.communicate(None)?;
+        String::from_utf8(out.stdout).map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+    }
+}
+
 #[cfg(test)]
 #[path = "command_tests.rs"]
 mod command_tests;

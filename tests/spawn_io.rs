@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 
-use subprocess::{Command, Stdio};
+use subprocess::{Command, Fd, Stdio};
 
 fn testbin() -> &'static str {
     env!("CARGO_BIN_EXE_subprocess_testbin")
@@ -270,4 +270,88 @@ fn posix_executable_override_preserves_argv0() {
     cmd.executable(testbin()).args(["custom-name", "argv0"]);
     let s = cmd.read().expect("read");
     assert_eq!(s, "custom-name\n"); // child's argv[0] is the user's, not the testbin path
+}
+
+// Pump / communicate =====
+
+#[test]
+fn communicate_does_not_deadlock_on_large_bidirectional_io() {
+    // > a pipe buffer (~64 KiB) in every direction: child copies stdin to BOTH
+    // stdout and stderr while the parent writes stdin and reads both outputs.
+    // A non-concurrent pump would deadlock here.
+    let input = vec![b'x'; 512 * 1024];
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["subprocess_testbin", "tee-both"]);
+    cmd.stdin(Stdio::pipe()).unwrap();
+    cmd.stdout(Stdio::pipe()).unwrap();
+    cmd.stderr(Stdio::pipe()).unwrap();
+    let mut child = cmd.spawn().expect("spawn");
+    let out = child.communicate(Some(&input)).expect("communicate");
+    assert!(out.status.success());
+    assert_eq!(out.stdout, input);
+    assert_eq!(out.stderr, input);
+}
+
+#[test]
+fn output_captures_stdout_and_stderr_with_sizes() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["subprocess_testbin", "emit", "5", "3"]);
+    let out = cmd.output().expect("output");
+    assert!(out.status.success());
+    assert_eq!(out.stdout, b"ooooo");
+    assert_eq!(out.stderr, b"eee");
+}
+
+#[test]
+fn read_returns_verbatim_utf8() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "echo-argv", "hello"]);
+    let s = cmd.read().expect("read");
+    assert_eq!(s, "hello\n"); // verbatim: trailing newline preserved
+}
+
+#[test]
+fn commandline_round_trips_through_split_or_passthrough() {
+    // Exercises the .commandline()/run_line path on BOTH OSes: POSIX splits via
+    // the shlex; Windows passes the line through and derives the program from
+    // the first token (the args-only raw_arg fix — a duplicated program token
+    // would make the child print the wrong argv or error).
+    let line = format!(r#""{}" echo-argv hello"#, testbin());
+    let s = subprocess::run_line(line).read().expect("read");
+    assert_eq!(s, "hello\n");
+}
+
+#[test]
+fn merge_stderr_into_stdout() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["subprocess_testbin", "emit", "4", "4"]);
+    cmd.stdout(Stdio::pipe()).unwrap();
+    cmd.stderr(Stdio::merge(Fd::STDOUT)).unwrap();
+    let mut child = cmd.spawn().expect("spawn");
+    let out = child.communicate(None).expect("communicate");
+    // Both streams land on the single stdout pipe (order between them is not
+    // guaranteed, but all 8 bytes are present and stderr capture is empty).
+    assert_eq!(out.stdout.len(), 8);
+    assert!(out.stdout.iter().all(|&b| b == b'o' || b == b'e'));
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
+fn null_stdout_discards() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "emit", "100", "0"]);
+    cmd.stdout(Stdio::null()).unwrap();
+    let status = cmd.status().expect("status");
+    assert!(status.success());
+}
+
+#[test]
+fn arbitrary_fd_is_unsupported_in_this_plan() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["subprocess_testbin", "exit", "0"]);
+    cmd.fd(3, Stdio::pipe_out()).unwrap(); // attaches fine
+    let err = cmd.spawn().unwrap_err(); // but spawn rejects it
+    assert!(matches!(err, subprocess::error::Error::Unsupported { .. }));
 }

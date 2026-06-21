@@ -8,7 +8,10 @@ use shared_child::SharedChild;
 use crate::command::Command;
 use crate::error::Error;
 use crate::identity::ProcessId;
-use crate::stdio::{Fd, Stdio};
+use crate::stdio::Fd;
+
+#[path = "child/pump.rs"]
+pub(crate) mod pump;
 
 #[path = "child/spawn.rs"]
 pub(crate) mod spawn;
@@ -100,6 +103,29 @@ impl Child {
     pub fn detach(mut self) {
         self.kill_on_drop = false;
     }
+
+    /// Feed `input` to stdin (if piped) and capture stdout/stderr (if piped),
+    /// pumping all streams concurrently to avoid deadlock. Returns the full
+    /// `Output` and exit status.
+    pub fn communicate(&mut self, input: Option<&[u8]>) -> Result<crate::Output, Error> {
+        pump::communicate(self, input)
+    }
+
+    pub(crate) fn take_stdin_writer(&mut self) -> Option<PipeWriter> {
+        match self.pipes.remove(&Fd::STDIN) {
+            Some(ParentEnd::Writer(w)) => Some(w),
+            other => {
+                if let Some(e) = other {
+                    self.pipes.insert(Fd::STDIN, e);
+                }
+                None
+            }
+        }
+    }
+
+    pub(crate) fn take_reader(&mut self, fd: Fd) -> Option<PipeReader> {
+        take_reader(&mut self.pipes, fd)
+    }
 }
 
 fn take_reader(pipes: &mut BTreeMap<Fd, ParentEnd>, fd: Fd) -> Option<PipeReader> {
@@ -118,23 +144,5 @@ impl Command {
     /// Spawn the configured command.
     pub fn spawn(&mut self) -> Result<Child, Error> {
         spawn::spawn(self)
-    }
-
-    /// Spawn, capture stdout to a `String`, wait for exit, and return the output.
-    ///
-    /// The command's stdout is wired to a pipe automatically; any existing
-    /// stdout configuration is overridden.
-    pub fn read(&mut self) -> Result<String, Error> {
-        use std::io::Read;
-        self.stdout(Stdio::pipe())?;
-        let mut child = self.spawn()?;
-        let mut reader = child
-            .stdout()
-            .ok_or_else(|| Error::Io(std::io::Error::other("no stdout pipe")))?;
-        let mut out = String::new();
-        reader.read_to_string(&mut out).map_err(Error::Io)?;
-        drop(reader);
-        child.wait()?;
-        Ok(out)
     }
 }
