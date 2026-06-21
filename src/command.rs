@@ -14,9 +14,6 @@ use crate::stdio::{Fd, ResolvedStdio, Stdio};
 /// A process to be configured and (later) spawned.
 #[derive(Debug)]
 pub struct Command {
-    // Read syntactically by input()/executable_path(), so the fields themselves
-    // are not flagged; the accessors (consumed only by the next plan) carry the
-    // allow below.
     input: CommandInput,
     executable: Option<PathBuf>,
     fds: BTreeMap<Fd, ResolvedStdio>,
@@ -27,7 +24,6 @@ pub struct Command {
 
 /// An environment variable operation, recorded in order.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum EnvOp {
     Set(OsString, OsString),
     Remove(OsString),
@@ -49,8 +45,6 @@ impl Default for Command {
 
 /// The argument source of truth. `Argv` and `CommandLine` are mutually
 /// exclusive — the last one set wins.
-// The CommandLine field is read by tests and the resolution plan, not the lib target yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) enum CommandInput {
     #[default]
@@ -91,6 +85,13 @@ impl Command {
 
     /// Set the argument source to a single command-line string (Windows-native
     /// form). Discards any previously set argv.
+    ///
+    /// # Platform note
+    ///
+    /// Combining `commandline` with [`executable`](Self::executable) is
+    /// unsupported on Windows in this plan (returns
+    /// [`Error::Unsupported`](crate::error::Error::Unsupported)); POSIX
+    /// supports it.
     pub fn commandline<S: Into<OsString>>(&mut self, line: S) -> &mut Command {
         self.input = CommandInput::CommandLine(line.into());
         self
@@ -98,18 +99,28 @@ impl Command {
 
     /// Override the executable file that the OS loads, independently of argv[0]
     /// (e.g. load `/bin/busybox` while argv[0] is `sh`).
+    ///
+    /// # Platform note
+    ///
+    /// On POSIX, the user's argv[0] is preserved via `CommandExt::arg0`, so
+    /// `executable("/bin/busybox").args(["sh", "-c", "..."])` correctly loads
+    /// busybox while the child sees `"sh"` as its argv[0].
+    ///
+    /// On Windows, `std::process` has no stable API to set argv[0] independently
+    /// of the executable, so argv[0] will be the executable path instead of the
+    /// user-supplied value. This limitation is lifted in Plan 4's raw backend.
+    /// Combining `executable` with [`commandline`](Self::commandline) is
+    /// unsupported on Windows (returns
+    /// [`Error::Unsupported`](crate::error::Error::Unsupported)).
     pub fn executable<P: Into<PathBuf>>(&mut self, path: P) -> &mut Command {
         self.executable = Some(path.into());
         self
     }
 
-    // Consumed by the resolution plan; unused by the lib target in this plan.
-    #[allow(dead_code)]
     pub(crate) fn input(&self) -> &CommandInput {
         &self.input
     }
 
-    #[allow(dead_code)]
     pub(crate) fn executable_path(&self) -> Option<&Path> {
         self.executable.as_deref()
     }
@@ -179,22 +190,18 @@ impl Command {
         &self.fds
     }
 
-    #[allow(dead_code)]
     pub(crate) fn fds_mut(&mut self) -> &mut BTreeMap<Fd, ResolvedStdio> {
         &mut self.fds
     }
 
-    #[allow(dead_code)]
     pub(crate) fn env_ops(&self) -> &[EnvOp] {
         &self.env_ops
     }
 
-    #[allow(dead_code)]
     pub(crate) fn cwd(&self) -> Option<&Path> {
         self.cwd.as_deref()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn kill_on_drop_flag(&self) -> bool {
         self.kill_on_drop
     }

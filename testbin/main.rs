@@ -8,6 +8,11 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("");
     match mode {
+        "argv0" => {
+            // Print this process's argv[0] so callers can verify it.
+            let argv0 = std::env::args().next().unwrap_or_default();
+            println!("{argv0}");
+        }
         "echo-argv" => {
             let mut out = std::io::stdout().lock();
             for a in &args[2..] {

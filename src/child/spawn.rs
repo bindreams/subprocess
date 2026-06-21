@@ -93,10 +93,12 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     // Read the identity immediately after spawn while the child is guaranteed
     // resolvable: on Windows shared_child holds the process handle (no PID
     // reuse possible); on Unix the child is an un-reaped zombie until wait()
-    // so /proc still lists it. If identity resolution fails despite this (e.g.
-    // a buggy kernel / container), record the raw PID without a start token;
-    // it is still usable for wait/kill.
-    let id = ProcessId::of(shared.id());
+    // so /proc still lists it.
+    let id = ProcessId::of(shared.id()).ok_or_else(|| {
+        Error::Io(std::io::Error::other(
+            "spawned child vanished before its identity could be read",
+        ))
+    })?;
 
     Ok(Child::from_parts(shared, id, parent_ends, kill_on_drop))
 }
@@ -109,6 +111,14 @@ fn build_std_command(cmd: &Command) -> Result<std::process::Command, Error> {
             let (program, rest) = resolve_program_argv(cmd, argv)?;
             let mut c = std::process::Command::new(program);
             c.args(rest);
+            // POSIX: when executable() overrides the loaded file, preserve the
+            // user's argv[0] via arg0(). Without this, std would set argv[0] to
+            // the executable path, silently dropping the user's intended name.
+            #[cfg(unix)]
+            if cmd.executable_path().is_some() && !argv.is_empty() {
+                use std::os::unix::process::CommandExt;
+                c.arg0(&argv[0]);
+            }
             c
         }
         CommandInput::CommandLine(line) => build_from_commandline(cmd, line)?,
@@ -132,6 +142,11 @@ fn resolve_program(cmd: &Command, fallback: std::ffi::OsString) -> std::ffi::OsS
 
 // Program + the trailing args (argv mode). `executable` overrides the loaded
 // file; argv[0] is the conventional program name otherwise.
+//
+// POSIX only: when `executable` is set and argv is non-empty, the user's
+// argv[0] is preserved via `CommandExt::arg0` (set on the caller's std_cmd).
+// On Windows std has no `arg0`; argv[0] silently becomes the executable path
+// (documented limitation lifted in Plan 4's raw backend).
 fn resolve_program_argv<'a>(
     cmd: &'a Command,
     argv: &'a [std::ffi::OsString],
@@ -162,6 +177,12 @@ fn build_from_commandline(cmd: &Command, line: &std::ffi::OsString) -> Result<st
     }
     let program = resolve_program(cmd, argv[0].clone());
     let mut c = std::process::Command::new(program);
+    // When executable() overrides the loaded file, argv[0] from the command
+    // line is the user's intended name — preserve it via arg0().
+    if cmd.executable_path().is_some() {
+        use std::os::unix::process::CommandExt;
+        c.arg0(&argv[0]);
+    }
     c.args(&argv[1..]);
     Ok(c)
 }

@@ -22,21 +22,8 @@ fn spawned_child_has_live_identity() {
     let mut cmd = Command::new();
     cmd.executable(testbin()).args(["subprocess_testbin", "exit", "0"]);
     let child = cmd.spawn().expect("spawn");
-    // id() is Some immediately after spawn.
-    let id = child.id().expect("identity present");
-    // pid() is stable across two calls.
-    assert_eq!(id.pid(), child.id().expect("identity stable").pid());
-    let _ = child.wait();
-}
-
-#[test]
-fn raw_pid_matches_identity_pid() {
-    let mut cmd = Command::new();
-    cmd.executable(testbin()).args(["subprocess_testbin", "exit", "0"]);
-    let child = cmd.spawn().expect("spawn");
-    if let Some(id) = child.id() {
-        assert_eq!(id.pid(), child.raw_pid());
-    }
+    // id() is stable across two calls.
+    assert_eq!(child.id().pid(), child.id().pid());
     let _ = child.wait();
 }
 
@@ -272,4 +259,15 @@ fn commandline_mode_c1_fix_no_duplicate_program_token() {
         ["argA", "argB"],
         "expected [argA, argB] but got {lines:?} — possible duplicate program token"
     );
+}
+
+// POSIX argv0 preservation =====
+
+#[cfg(unix)]
+#[test]
+fn posix_executable_override_preserves_argv0() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["custom-name", "argv0"]);
+    let s = cmd.read().expect("read");
+    assert_eq!(s, "custom-name\n"); // child's argv[0] is the user's, not the testbin path
 }

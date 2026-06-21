@@ -8,7 +8,7 @@ use shared_child::SharedChild;
 use crate::command::Command;
 use crate::error::Error;
 use crate::identity::ProcessId;
-use crate::stdio::Fd;
+use crate::stdio::{Fd, Stdio};
 
 #[path = "child/spawn.rs"]
 pub(crate) mod spawn;
@@ -24,10 +24,8 @@ pub(crate) enum ParentEnd {
 #[derive(Debug)]
 pub struct Child {
     shared: SharedChild,
-    /// Stable identity resolved immediately after spawn. `None` if identity
-    /// could not be read (degenerate environment); the child is still usable
-    /// for wait/kill in that case.
-    id: Option<ProcessId>,
+    /// Stable identity resolved immediately after spawn.
+    id: ProcessId,
     pipes: BTreeMap<Fd, ParentEnd>,
     kill_on_drop: bool,
 }
@@ -35,7 +33,7 @@ pub struct Child {
 impl Child {
     pub(crate) fn from_parts(
         shared: SharedChild,
-        id: Option<ProcessId>,
+        id: ProcessId,
         pipes: BTreeMap<Fd, ParentEnd>,
         kill_on_drop: bool,
     ) -> Child {
@@ -47,24 +45,14 @@ impl Child {
         }
     }
 
-    /// This child's stable identity, or `None` if identity could not be read
-    /// at spawn time (see [`crate::identity::ProcessId`]).
-    pub fn id(&self) -> Option<ProcessId> {
+    /// This child's stable identity (see [`crate::identity::ProcessId`]).
+    pub fn id(&self) -> ProcessId {
         self.id
     }
 
-    /// The raw OS process id (not stable-across-time; prefer [`id`](Self::id)).
-    pub fn raw_pid(&self) -> u32 {
-        self.shared.id()
-    }
-
-    /// Whether the child is still running. Returns `false` if identity could
-    /// not be read at spawn time (conservative — avoids a false positive).
+    /// Whether the child is still running.
     pub fn is_alive(&self) -> bool {
-        match &self.id {
-            Some(id) => id.is_alive(),
-            None => false,
-        }
+        self.id.is_alive()
     }
 
     /// Block until the child exits, returning its status.
@@ -130,5 +118,23 @@ impl Command {
     /// Spawn the configured command.
     pub fn spawn(&mut self) -> Result<Child, Error> {
         spawn::spawn(self)
+    }
+
+    /// Spawn, capture stdout to a `String`, wait for exit, and return the output.
+    ///
+    /// The command's stdout is wired to a pipe automatically; any existing
+    /// stdout configuration is overridden.
+    pub fn read(&mut self) -> Result<String, Error> {
+        use std::io::Read;
+        self.stdout(Stdio::pipe())?;
+        let mut child = self.spawn()?;
+        let mut reader = child
+            .stdout()
+            .ok_or_else(|| Error::Io(std::io::Error::other("no stdout pipe")))?;
+        let mut out = String::new();
+        reader.read_to_string(&mut out).map_err(Error::Io)?;
+        drop(reader);
+        child.wait()?;
+        Ok(out)
     }
 }
