@@ -12,6 +12,8 @@
 //! human-facing wall-clock lives in `created_at()` (Task 2), allowed to drift
 //! and never used for identity.
 
+mod stat_parse;
+
 #[cfg_attr(windows, path = "identity/windows.rs")]
 #[cfg_attr(target_os = "linux", path = "identity/linux.rs")]
 #[cfg_attr(target_os = "macos", path = "identity/macos.rs")]
