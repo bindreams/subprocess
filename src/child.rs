@@ -132,8 +132,8 @@ impl Drop for Child {
         //
         // Order matters: kill BEFORE wait. On Unix, reaping (wait) frees the PID
         // for reuse, so signaling (kill) after a reap could hit an unrelated
-        // process. shared_child enforces this ordering internally too; keep it
-        // here so reordering the two lines cannot reintroduce the reuse race.
+        // process. (shared_child serializes kill/wait under a lock but does not
+        // itself impose this ordering — we do, here.)
         let _ = self.shared.kill();
         let _ = self.shared.wait();
     }
