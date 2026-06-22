@@ -105,15 +105,7 @@ impl Child {
 
     /// Take the parent's write end of the child's stdin pipe, if configured.
     pub fn stdin(&mut self) -> Option<PipeWriter> {
-        match self.pipes.remove(&Fd::STDIN) {
-            Some(ParentEnd::Writer(w)) => Some(w),
-            other => {
-                if let Some(e) = other {
-                    self.pipes.insert(Fd::STDIN, e);
-                }
-                None
-            }
-        }
+        self.fd_write_end(Fd::STDIN)
     }
 
     /// Take the parent's read end of the child's stdout pipe, if configured.

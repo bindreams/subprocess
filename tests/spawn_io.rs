@@ -372,11 +372,11 @@ fn unix_fd3_pipe_round_trips() {
         .args(["subprocess_testbin", "fd3-echo"])
         .stdout(Stdio::pipe())
         .expect("stdout pipe")
-        .fd(3, Stdio::pipe_out())
-        .expect("fd 3 pipe_out");
+        // pipe_in: child reads, parent holds the write end.
+        .fd(3, Stdio::pipe_in())
+        .expect("fd 3 pipe_in");
     let mut child = cmd.spawn().expect("spawn with fd 3");
     let mut stdout = child.stdout().expect("stdout reader");
-    // fd 3 is pipe_out (child reads, parent writes) → parent holds a PipeWriter.
     let mut fd3_writer = child.fd_write_end(Fd::from(3)).expect("fd 3 writer");
 
     fd3_writer.write_all(b"hello fd3").expect("write to fd 3");
@@ -388,6 +388,48 @@ fn unix_fd3_pipe_round_trips() {
     let _ = child.wait();
 
     assert_eq!(buf, b"hello fd3");
+}
+
+/// Prove that fd 3 with Stdio::null() is accepted and spawns successfully.
+/// The child reads from fd 3 (which is /dev/null) and gets immediate EOF,
+/// producing no stdout output. Confirms the null path reaches command-fds.
+#[cfg(unix)]
+#[test]
+fn unix_fd3_null_is_accepted() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "fd3-echo"])
+        .stdout(Stdio::pipe())
+        .expect("stdout pipe")
+        .fd(3, Stdio::null())
+        .expect("fd 3 null");
+    let mut child = cmd.spawn().expect("spawn with fd 3 null");
+    let mut stdout = child.stdout().expect("stdout reader");
+
+    let mut buf = Vec::new();
+    stdout.read_to_end(&mut buf).expect("read stdout");
+    drop(stdout);
+    let status = child.wait().expect("wait");
+
+    assert!(status.success());
+    assert!(buf.is_empty(), "null fd 3 should produce no output");
+}
+
+/// Prove that Stdio::inherit() on fd 3 is rejected with Unsupported (no defined
+/// parent stream to dup for n>=3). The raw backend (Plan 4) lifts this.
+#[cfg(unix)]
+#[test]
+fn unix_fd3_inherit_is_rejected() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "exit", "0"])
+        .fd(3, Stdio::inherit())
+        .expect("fd attach ok");
+    let err = cmd.spawn().expect_err("inherit on fd 3 should be rejected");
+    assert!(
+        matches!(err, subprocess::error::Error::Unsupported { .. }),
+        "expected Unsupported, got {err:?}"
+    );
 }
 
 /// Prove that fd 3 configured as a file is passed through to the child:

@@ -55,30 +55,33 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
 
     // Resolve every configured slot to a (child-side ChildEnd, optional parent
     // end). On Unix this covers both 0/1/2 and n>=3; on Windows only 0/1/2 reach
-    // here (n>=3 are rejected above). Two-pass: non-merge first, then merges dup
-    // an already-resolved target — one level of indirection only (guarded above).
+    // here (n>=3 are rejected above). Two-pass: non-merge first so merge can dup.
     let mut child_ends: BTreeMap<Fd, ChildEnd> = BTreeMap::new();
     let mut parent_ends: BTreeMap<Fd, ParentEnd> = BTreeMap::new();
 
-    // First pass: resolve all non-merge slots. Std slots (0/1/2) default to inherit.
-    for slot in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
+    // First pass: resolve all non-merge slots. On Unix iterate all configured fds;
+    // on Windows the rejection above ensures only 0/1/2 exist. The std slots 0/1/2
+    // default to inherit when not explicitly configured; n>=3 have no default.
+    let std_slots = [Fd::STDIN, Fd::STDOUT, Fd::STDERR];
+    let all_slots: Vec<Fd> = {
+        // Yield 0/1/2 first (even unconfigured, for inherit defaulting), then any
+        // configured n>=3 (Unix only — Windows is already guarded above).
+        let mut v: Vec<Fd> = std_slots.to_vec();
+        for &fd in fds.keys() {
+            if fd.raw() >= 3 {
+                v.push(fd);
+            }
+        }
+        v
+    };
+    for slot in all_slots {
         let resolved = fds.get(&slot);
         if let Some(ResolvedStdio::Merge(_)) = resolved {
             continue; // second pass
         }
-        let (child_end, parent) = resolve_non_merge(slot, resolved)?;
-        if let Some(p) = parent {
-            parent_ends.insert(slot, p);
-        }
-        child_ends.insert(slot, child_end);
-    }
-    // n>=3 slots: no default (must be explicitly configured).
-    #[cfg(unix)]
-    for slot in fds.keys().filter(|fd| fd.raw() >= 3) {
-        let slot = *slot;
-        let resolved = fds.get(&slot);
-        if let Some(ResolvedStdio::Merge(_)) = resolved {
-            continue; // second pass
+        // n>=3 slots have no inherit default; skip unconfigured ones.
+        if slot.raw() >= 3 && resolved.is_none() {
+            continue;
         }
         let (child_end, parent) = resolve_non_merge(slot, resolved)?;
         if let Some(p) = parent {
@@ -99,7 +102,7 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     }
 
     // Hand 0/1/2 child ends to std (consumes them; std closes its copies on spawn).
-    for slot in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
+    for slot in std_slots {
         if let Some(end) = child_ends.remove(&slot) {
             let stdio = StdStdio::from(end);
             match slot {
@@ -110,25 +113,27 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
         }
     }
 
-    // On Unix, hand n>=3 child ends to command-fds via pre_exec fd_mappings.
-    // command-fds takes ownership of each OwnedFd, keeping it alive until spawn,
-    // then dup2's it to the target fd number in the child after fork.
+    // On Unix, hand n>=3 child ends to command-fds. This installs a pre_exec hook
+    // that dup2's each OwnedFd to its target number post-fork. Ordering: std dup2's
+    // 0/1/2 before pre_exec hooks run (std disables posix_spawn when hooks are
+    // registered), so our n>=3 mappings never clobber the std stdio fds.
+    // FdMappingCollision is unreachable: child_ends keys come from a BTreeMap, so
+    // each child fd number is unique.
     #[cfg(unix)]
     {
         use command_fds::{CommandFdExt, FdMapping};
-        use std::os::unix::io::RawFd;
 
         let mappings: Vec<FdMapping> = child_ends
             .into_iter()
             .map(|(fd, owned)| FdMapping {
                 parent_fd: owned,
-                child_fd: fd.raw() as RawFd,
+                child_fd: fd.raw(),
             })
             .collect();
         if !mappings.is_empty() {
             std_cmd
                 .fd_mappings(mappings)
-                .map_err(|e| Error::Io(std::io::Error::other(format!("fd mapping collision: {e}"))))?;
+                .expect("child fd numbers are unique (BTreeMap keys)");
         }
     }
 
@@ -367,6 +372,8 @@ fn file_end(f: &std::fs::File) -> Result<ChildEnd, Error> {
 fn inherit_end(slot: Fd) -> Result<ChildEnd, Error> {
     // Duplicate the parent's matching std stream. Bind the stream to a variable
     // before borrowing its descriptor (a temporary would be dropped while borrowed).
+    // For n>=3, Stdio::inherit() has no defined parent stream to dup — reject it
+    // explicitly. (The raw backend, Plan 4, can open arbitrary parent fds by number.)
     #[cfg(unix)]
     {
         use std::os::fd::AsFd;
@@ -379,9 +386,18 @@ fn inherit_end(slot: Fd) -> Result<ChildEnd, Error> {
                 let s = std::io::stdout();
                 s.as_fd().try_clone_to_owned()
             }
-            _ => {
+            Fd::STDERR => {
                 let s = std::io::stderr();
                 s.as_fd().try_clone_to_owned()
+            }
+            other => {
+                return Err(Error::Unsupported {
+                    op: format!("Stdio::inherit() on {other}"),
+                    platform: "unix",
+                    detail: "inherit on fd >= 3 has no defined parent stream; \
+                             use pipe/file/null, or the raw backend (Plan 4)"
+                        .into(),
+                })
             }
         };
         owned.map_err(Error::Io)
