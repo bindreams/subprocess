@@ -126,6 +126,28 @@ impl Child {
         take_reader(&mut self.pipes, Fd::STDERR)
     }
 
+    /// Take the parent's write end of a pipe configured for `fd` (child reads).
+    /// Returns `None` if `fd` was not configured as a pipe, or the write end has
+    /// already been taken.
+    pub fn fd_write_end(&mut self, fd: Fd) -> Option<PipeWriter> {
+        match self.pipes.remove(&fd) {
+            Some(ParentEnd::Writer(w)) => Some(w),
+            other => {
+                if let Some(e) = other {
+                    self.pipes.insert(fd, e);
+                }
+                None
+            }
+        }
+    }
+
+    /// Take the parent's read end of a pipe configured for `fd` (child writes).
+    /// Returns `None` if `fd` was not configured as a pipe, or the read end has
+    /// already been taken.
+    pub fn fd_read_end(&mut self, fd: Fd) -> Option<PipeReader> {
+        take_reader(&mut self.pipes, fd)
+    }
+
     /// Consume the handle without killing or waiting for the child (opt out of
     /// kill-on-drop). For Job Object containment, `disarm()` clears the
     /// `KILL_ON_JOB_CLOSE` flag before the job handle is released, ensuring the

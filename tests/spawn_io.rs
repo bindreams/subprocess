@@ -176,12 +176,13 @@ fn null_stdout_discards_output() {
 
 // Rejections =====
 
+#[cfg(windows)]
 #[test]
 fn fd_ge_3_is_rejected() {
     let mut cmd = Command::new();
     cmd.executable(testbin()).args(["subprocess_testbin", "exit", "0"]);
     cmd.fd(3, Stdio::null()).expect("fd attach ok");
-    let err = cmd.spawn().expect_err("should reject fd >= 3");
+    let err = cmd.spawn().expect_err("should reject fd >= 3 on Windows");
     assert!(
         matches!(err, subprocess::error::Error::Unsupported { .. }),
         "expected Unsupported, got {err:?}"
@@ -347,13 +348,82 @@ fn null_stdout_discards() {
     assert!(status.success());
 }
 
+#[cfg(windows)]
 #[test]
-fn arbitrary_fd_is_unsupported_in_this_plan() {
+fn arbitrary_fd_is_unsupported_on_windows() {
     let mut cmd = Command::new();
     cmd.executable(testbin()).args(["subprocess_testbin", "exit", "0"]);
     cmd.fd(3, Stdio::pipe_out()).unwrap(); // attaches fine
-    let err = cmd.spawn().unwrap_err(); // but spawn rejects it
+    let err = cmd.spawn().unwrap_err(); // but spawn rejects it on Windows
     assert!(matches!(err, subprocess::error::Error::Unsupported { .. }));
+}
+
+// Arbitrary fd (n>=3) — Unix only, wired via command-fds =====
+
+/// Prove that a child fd 3 configured as a pipe is reachable from the child:
+/// the testbin's `fd3-echo` mode reads fd 3 and copies it to stdout. We write
+/// a known payload into the parent write-end, close it, then read stdout to
+/// EOF — no timers, no polling, fully deterministic.
+#[cfg(unix)]
+#[test]
+fn unix_fd3_pipe_round_trips() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "fd3-echo"])
+        .stdout(Stdio::pipe())
+        .expect("stdout pipe")
+        .fd(3, Stdio::pipe_out())
+        .expect("fd 3 pipe_out");
+    let mut child = cmd.spawn().expect("spawn with fd 3");
+    let mut stdout = child.stdout().expect("stdout reader");
+    // fd 3 is pipe_out (child reads, parent writes) → parent holds a PipeWriter.
+    let mut fd3_writer = child.fd_write_end(Fd::from(3)).expect("fd 3 writer");
+
+    fd3_writer.write_all(b"hello fd3").expect("write to fd 3");
+    drop(fd3_writer); // EOF on the child's fd 3 read end
+
+    let mut buf = Vec::new();
+    stdout.read_to_end(&mut buf).expect("read stdout");
+    drop(stdout);
+    let _ = child.wait();
+
+    assert_eq!(buf, b"hello fd3");
+}
+
+/// Prove that fd 3 configured as a file is passed through to the child:
+/// the child reads fd 3 and echoes it to stdout; we compare the payload.
+#[cfg(unix)]
+#[test]
+fn unix_fd3_file_round_trips() {
+    use std::io::{Seek, Write};
+
+    // Write a payload to a temp file, then rewind for the child to read.
+    let mut tmp = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(std::env::temp_dir().join("subprocess_fd3_test.tmp"))
+        .expect("open tmpfile");
+    tmp.write_all(b"from file via fd3").expect("write tmpfile");
+    tmp.seek(std::io::SeekFrom::Start(0)).expect("seek");
+
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "fd3-echo"])
+        .stdout(Stdio::pipe())
+        .expect("stdout pipe")
+        .fd(3, Stdio::from_file(tmp.try_clone().expect("clone file")))
+        .expect("fd 3 from file");
+    let mut child = cmd.spawn().expect("spawn with fd 3 file");
+    let mut stdout = child.stdout().expect("stdout reader");
+
+    let mut buf = Vec::new();
+    stdout.read_to_end(&mut buf).expect("read stdout");
+    drop(stdout);
+    let _ = child.wait();
+
+    assert_eq!(buf, b"from file via fd3");
 }
 
 #[test]

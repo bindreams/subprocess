@@ -134,6 +134,16 @@ fn main() {
             let sid = unsafe { libc::getsid(0) };
             println!("{sid}");
         }
+        #[cfg(unix)]
+        "fd3-echo" => {
+            // Read all bytes from fd 3 and echo them to stdout. Used by the
+            // arbitrary-fd tests to prove the child received its fd 3 mapping.
+            // Safety: fd 3 is passed in by the test (via command-fds); this is
+            // the only caller and it always provides a valid, open fd 3.
+            use std::os::fd::FromRawFd;
+            let mut f = unsafe { std::fs::File::from_raw_fd(3) };
+            std::io::copy(&mut f, &mut std::io::stdout().lock()).unwrap();
+        }
         other => {
             eprintln!("subprocess_testbin: unknown mode {other:?}");
             exit(2);

@@ -22,7 +22,9 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     let fds = std::mem::take(cmd.fds_mut());
     let kill_on_drop = cmd.kill_on_drop_flag();
 
-    // Reject what the std-only backend cannot express in this plan.
+    // On Windows, fd >= 3 is unsupported in this plan (no MSVCRT fd-table wiring).
+    // On Unix, arbitrary fds are handled below via command-fds.
+    #[cfg(windows)]
     for slot in fds.keys() {
         if slot.raw() >= 3 {
             return Err(Error::Unsupported {
@@ -35,8 +37,8 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     // Reject merge-targeting-a-merge: the two-pass algorithm only resolves one
     // level of indirection. Transitive chaining requires a fixpoint loop and is
     // deferred to the raw backend.
-    for slot in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
-        if let Some(ResolvedStdio::Merge(target)) = fds.get(&slot) {
+    for slot in fds.keys() {
+        if let Some(ResolvedStdio::Merge(target)) = fds.get(slot) {
             if matches!(fds.get(target), Some(ResolvedStdio::Merge(_))) {
                 return Err(Error::Unsupported {
                     op: format!("merge {slot} -> {target} -> <another merge>"),
@@ -51,11 +53,14 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
 
     let mut std_cmd = build_std_command(cmd)?;
 
-    // Resolve each std slot to a (child-side ChildEnd, optional parent end).
-    // Default unset 0/1/2 to inherit. Resolve non-merge first so merge can dup.
+    // Resolve every configured slot to a (child-side ChildEnd, optional parent
+    // end). On Unix this covers both 0/1/2 and n>=3; on Windows only 0/1/2 reach
+    // here (n>=3 are rejected above). Two-pass: non-merge first, then merges dup
+    // an already-resolved target — one level of indirection only (guarded above).
     let mut child_ends: BTreeMap<Fd, ChildEnd> = BTreeMap::new();
     let mut parent_ends: BTreeMap<Fd, ParentEnd> = BTreeMap::new();
 
+    // First pass: resolve all non-merge slots. Std slots (0/1/2) default to inherit.
     for slot in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
         let resolved = fds.get(&slot);
         if let Some(ResolvedStdio::Merge(_)) = resolved {
@@ -67,26 +72,64 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
         }
         child_ends.insert(slot, child_end);
     }
-    // Second pass: merges dup an already-resolved target's child end.
-    for slot in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
-        if let Some(ResolvedStdio::Merge(target)) = fds.get(&slot) {
+    // n>=3 slots: no default (must be explicitly configured).
+    #[cfg(unix)]
+    for slot in fds.keys().filter(|fd| fd.raw() >= 3) {
+        let slot = *slot;
+        let resolved = fds.get(&slot);
+        if let Some(ResolvedStdio::Merge(_)) = resolved {
+            continue; // second pass
+        }
+        let (child_end, parent) = resolve_non_merge(slot, resolved)?;
+        if let Some(p) = parent {
+            parent_ends.insert(slot, p);
+        }
+        child_ends.insert(slot, child_end);
+    }
+    // Second pass: merges dup an already-resolved target's child end (any slot).
+    for slot in fds.keys() {
+        if let Some(ResolvedStdio::Merge(target)) = fds.get(slot) {
             let src = child_ends.get(target).ok_or_else(|| Error::Unsupported {
                 op: format!("merge {slot} -> {target}"),
                 platform: std::env::consts::OS,
                 detail: "merge target descriptor is not configured".into(),
             })?;
-            child_ends.insert(slot, dup(src)?);
+            child_ends.insert(*slot, dup(src)?);
         }
     }
 
-    // Hand the child ends to std (consumes them; std closes its copies on spawn).
-    for (slot, end) in child_ends {
-        let stdio = StdStdio::from(end);
-        match slot {
-            Fd::STDIN => std_cmd.stdin(stdio),
-            Fd::STDOUT => std_cmd.stdout(stdio),
-            _ => std_cmd.stderr(stdio),
-        };
+    // Hand 0/1/2 child ends to std (consumes them; std closes its copies on spawn).
+    for slot in [Fd::STDIN, Fd::STDOUT, Fd::STDERR] {
+        if let Some(end) = child_ends.remove(&slot) {
+            let stdio = StdStdio::from(end);
+            match slot {
+                Fd::STDIN => std_cmd.stdin(stdio),
+                Fd::STDOUT => std_cmd.stdout(stdio),
+                _ => std_cmd.stderr(stdio),
+            };
+        }
+    }
+
+    // On Unix, hand n>=3 child ends to command-fds via pre_exec fd_mappings.
+    // command-fds takes ownership of each OwnedFd, keeping it alive until spawn,
+    // then dup2's it to the target fd number in the child after fork.
+    #[cfg(unix)]
+    {
+        use command_fds::{CommandFdExt, FdMapping};
+        use std::os::unix::io::RawFd;
+
+        let mappings: Vec<FdMapping> = child_ends
+            .into_iter()
+            .map(|(fd, owned)| FdMapping {
+                parent_fd: owned,
+                child_fd: fd.raw() as RawFd,
+            })
+            .collect();
+        if !mappings.is_empty() {
+            std_cmd
+                .fd_mappings(mappings)
+                .map_err(|e| Error::Io(std::io::Error::other(format!("fd mapping collision: {e}"))))?;
+        }
     }
 
     // Phase 1 (before spawn): root detection + (later tasks) pre-spawn setup.
