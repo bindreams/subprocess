@@ -283,8 +283,8 @@ fn resume_initial_threads(child: &std::process::Child) -> io::Result<()> {
 /// Assign `child` to a `KILL_ON_JOB_CLOSE` job and resume its initial threads.
 ///
 /// Returns `Ok(Some(JobHandle))` on full success (job assigned AND resumed).
-/// Returns `Ok(None)` when job assignment fails (caller reports `Containment::None`;
-/// Task 7 will wire `TreeWalk` as the fallback).
+/// Returns `Ok(None)` when job assignment fails — the caller falls back to the
+/// universal `Containment::TreeWalk` mechanism (identity teardown).
 /// Returns `Err` when resume fails — a frozen child is unacceptable; we kill
 /// the child+job and propagate the error to fail the spawn.
 pub(crate) fn attach_job(child: &std::process::Child) -> io::Result<Option<JobHandle>> {
@@ -302,10 +302,9 @@ pub(crate) fn attach_job(child: &std::process::Child) -> io::Result<Option<JobHa
     match job_result {
         Ok(job) => Ok(Some(job)),
         Err(_e) => {
-            // Job assignment failed. The failure is surfaced to the caller via the
-            // returned Containment::None (now) / TreeWalk (after Task 7). A library
-            // must not write to the parent's stderr unconditionally.
-            // TODO(task-7): wire TreeWalk fallback here instead of Containment::None.
+            // Job assignment failed. Surfaced to the caller as Ok(None); dispatch
+            // falls back to the TreeWalk mechanism. A library must not write to
+            // the parent's stderr unconditionally.
             Ok(None)
         }
     }

@@ -646,6 +646,99 @@ fn unix_session_child_is_own_session_leader() {
     );
 }
 
+// TreeWalk containment =====
+
+/// Spawn a contained tree using `ContainMode::TreeWalk` and return the handles.
+/// Sibling of `spawn_session_tree`/`spawn_contained_tree`; selects the
+/// identity-aware walk directly. Available on `any(unix, windows)`.
+#[cfg(any(unix, windows))]
+fn spawn_treewalk_tree() -> (subprocess::Child, std::net::TcpStream) {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind control listener");
+    let addr = listener.local_addr().unwrap().to_string();
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "spawn-grandchild", &addr]);
+    cmd.contain_with(subprocess::ContainMode::TreeWalk);
+    let child = cmd.spawn().expect("spawn tree-walk-contained tree");
+    let mut gc = None;
+    for _ in 0..2 {
+        let (mut s, _) = listener.accept().expect("accept control conn");
+        let mut tag = [0u8; 1];
+        s.read_exact(&mut tag).expect("read tag");
+        if tag[0] == b'G' {
+            gc = Some(s);
+        }
+    }
+    (child, gc.expect("grandchild connected"))
+}
+
+/// `ContainMode::TreeWalk` kills the whole tree by identity. Deterministic
+/// because the per-OS rule includes same-jiffy children on Linux/macOS; on
+/// Windows the strict-`>` rule still catches the grandchild (it is created after
+/// the root). Proof of death is the grandchild's control socket EOFing /
+/// ConnectionReset — never an is_alive() race or a timer.
+#[cfg(any(unix, windows))]
+#[test]
+fn treewalk_kill_tree_reaps_the_grandchild() {
+    let (child, mut gc_stream) = spawn_treewalk_tree();
+    assert_eq!(child.containment(), subprocess::Containment::TreeWalk);
+
+    child.kill_tree().expect("kill_tree");
+    let _ = child.wait(); // reap the root
+
+    // Deterministic proof: the grandchild's control socket closes on its death.
+    // Accept graceful EOF (n==0) or, on Windows, a ConnectionReset — both prove
+    // the grandchild is dead. (See windows_kill_tree_reaps_the_grandchild.)
+    let mut buf = [0u8; 1];
+    match gc_stream.read(&mut buf) {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Ok(n) => panic!("expected EOF/ConnectionReset after kill_tree, got {n} bytes"),
+        Err(e) => panic!("unexpected error reading grandchild control socket: {e}"),
+    }
+}
+
+/// Prove TreeWalk's distinguishing capability: it kills a child that has
+/// `setsid`'d out of any process group/session — which a `killpg`-based teardown
+/// aimed at the original pgid would miss. The intermediate child escapes via
+/// `setsid` BEFORE spawning the grandchild, then both are torn down by identity.
+/// Unix-only (the escape uses `setsid`); EOF on the grandchild's control socket
+/// is the deterministic proof of death.
+#[cfg(unix)]
+#[test]
+fn treewalk_kills_process_group_escapee() {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind control listener");
+    let addr = listener.local_addr().unwrap().to_string();
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "spawn-grandchild-escapee", &addr]);
+    cmd.contain_with(subprocess::ContainMode::TreeWalk);
+    let child = cmd.spawn().expect("spawn tree-walk escapee tree");
+    assert_eq!(child.containment(), subprocess::Containment::TreeWalk);
+
+    let mut gc = None;
+    for _ in 0..2 {
+        let (mut s, _) = listener.accept().expect("accept control conn");
+        let mut tag = [0u8; 1];
+        s.read_exact(&mut tag).expect("read tag");
+        if tag[0] == b'G' {
+            gc = Some(s);
+        }
+    }
+    let mut gc_stream = gc.expect("grandchild connected");
+
+    child.kill_tree().expect("kill_tree");
+    let _ = child.wait();
+
+    // The escapee left its process group; only identity-based teardown reaches
+    // it and its grandchild. EOF proves the grandchild died.
+    let mut buf = [0u8; 1];
+    let n = gc_stream.read(&mut buf).expect("read grandchild control socket");
+    assert_eq!(n, 0, "TreeWalk must kill a setsid-escapee tree, not just the root");
+}
+
 // cgroup v2 integration test =====
 // Runs only on Linux, and only when the CI provisions a delegated cgroup
 // (SUBPROCESS_TEST_CGROUP=1). The env guard means this is a true no-op when

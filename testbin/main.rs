@@ -100,6 +100,33 @@ fn main() {
             let _ = sock.read(&mut buf);
         }
         #[cfg(unix)]
+        "spawn-grandchild-escapee" => {
+            // Like spawn-grandchild, but FIRST escape any process group / session
+            // the parent put us in by calling setsid(2). A killpg-based teardown
+            // aimed at our original pgid would then miss us and the grandchild;
+            // only the identity-aware TreeWalk catches us. We become a new session
+            // leader, THEN spawn the grandchild (it inherits the new session), THEN
+            // hold our own control connection.
+            let addr = args[2].clone();
+            // Safety: setsid() has no preconditions here (we are not already a
+            // process-group leader in the common spawn path) and is always safe to
+            // call; on EPERM we proceed anyway (best-effort escape for the test).
+            unsafe {
+                let _ = libc::setsid();
+            }
+            let exe = std::env::current_exe().unwrap();
+            #[allow(clippy::zombie_processes)] // intentional: grandchild must outlive us; TreeWalk kills it
+            let _gc = std::process::Command::new(exe)
+                .args(["control-block", &addr, "G"])
+                .spawn()
+                .unwrap();
+            let mut sock = std::net::TcpStream::connect(&addr).unwrap();
+            sock.write_all(b"R").unwrap();
+            sock.flush().unwrap();
+            let mut buf = [0u8; 1];
+            let _ = sock.read(&mut buf);
+        }
+        #[cfg(unix)]
         "sid-report" => {
             // Print our session id (getsid(0)) to stdout so the test can verify
             // setsid() actually ran and the child is its own session leader.

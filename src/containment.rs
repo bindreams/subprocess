@@ -123,6 +123,12 @@ pub(crate) mod cgroup;
 #[path = "containment/windows.rs"]
 pub(crate) mod windows;
 
+#[path = "containment/enumerate.rs"]
+pub(crate) mod enumerate;
+
+#[path = "containment/treewalk.rs"]
+pub(crate) mod treewalk;
+
 #[path = "containment/dispatch.rs"]
 pub(crate) mod dispatch;
 #[allow(unused_imports)]

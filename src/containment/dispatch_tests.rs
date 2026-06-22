@@ -37,13 +37,16 @@ fn unix_setup_for_strongest_selects_process_group() {
     assert_eq!(unix_setup_for(Some(ContainMode::Strongest)), UnixSetup::ProcessGroup);
 }
 
-/// `ContainMode::TreeWalk` must select `UnixSetup::ProcessGroup`.
+/// `ContainMode::TreeWalk` must select `UnixSetup::None` — NO pre-spawn process
+/// group. TreeWalk exists to catch children that escape a process group via
+/// `setsid`/`setpgid`, so the root must not be put in a group; teardown is by
+/// identity at kill time.
 #[cfg(unix)]
 #[test]
-fn unix_setup_for_treewalk_selects_process_group() {
+fn unix_setup_for_treewalk_selects_none() {
     use super::{unix_setup_for, UnixSetup};
     use crate::containment::ContainMode;
-    assert_eq!(unix_setup_for(Some(ContainMode::TreeWalk)), UnixSetup::ProcessGroup);
+    assert_eq!(unix_setup_for(Some(ContainMode::TreeWalk)), UnixSetup::None);
 }
 
 /// Uncontained (`None` mode) must select `UnixSetup::ProcessGroup` (the
