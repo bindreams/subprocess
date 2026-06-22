@@ -851,6 +851,27 @@ fn treewalk_kills_process_group_escapee() {
     assert_eq!(n, 0, "TreeWalk must kill a setsid-escapee tree, not just the root");
 }
 
+/// Drop kills the whole contained tree. Mirrors `drop_kills_and_reaps_the_child`
+/// (the lone-child case) but wraps a contained `spawn-grandchild` tree so the
+/// grandchild must also die. Proof of death: the grandchild's control socket
+/// EOFs (Unix) or ConnectionResets (Windows) — the same C3 death-watch used by
+/// `kill_tree` tests above.
+#[cfg(any(unix, windows))]
+#[test]
+fn drop_kills_contained_tree() {
+    let (child, mut gc_stream) = spawn_contained_tree();
+    // Drop triggers: attached.hard_kill() → shared.kill() → shared.wait()
+    drop(child);
+
+    let mut buf = [0u8; 1];
+    match gc_stream.read(&mut buf) {
+        Ok(0) => {}                                                     // graceful EOF — grandchild exited
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {} // forceful kill — also proof of death
+        Ok(n) => panic!("expected EOF/ConnectionReset after drop, got {n} bytes"),
+        Err(e) => panic!("unexpected error reading grandchild control socket after drop: {e}"),
+    }
+}
+
 // cgroup v2 integration test =====
 // Runs only on Linux, and only when the CI provisions a delegated cgroup
 // (SUBPROCESS_TEST_CGROUP=1). The env guard means this is a true no-op when
