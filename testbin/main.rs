@@ -144,6 +144,19 @@ fn main() {
             let mut f = unsafe { std::fs::File::from_raw_fd(3) };
             std::io::copy(&mut f, &mut std::io::stdout().lock()).unwrap();
         }
+        #[cfg(unix)]
+        "fd3-write" => {
+            // Write the token bytes to fd 3 and flush. Used by the cgroup-clobber
+            // test: if command-fds' dup2 ran before the cgroup self-placement, a
+            // stray "0" would corrupt this fd's stream; an exact match proves no
+            // clobber. Safety: fd 3 is passed in by the test (via command-fds);
+            // this is the only caller and it always provides a valid, open fd 3.
+            use std::os::fd::FromRawFd;
+            let token = &args[2];
+            let mut f = unsafe { std::fs::File::from_raw_fd(3) };
+            f.write_all(token.as_bytes()).unwrap();
+            f.flush().unwrap();
+        }
         other => {
             eprintln!("subprocess_testbin: unknown mode {other:?}");
             exit(2);

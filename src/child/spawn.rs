@@ -65,8 +65,13 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     let std_slots = [Fd::STDIN, Fd::STDOUT, Fd::STDERR];
     let all_slots: Vec<Fd> = {
         // Yield 0/1/2 first (even unconfigured, for inherit defaulting), then any
-        // configured n>=3 (Unix only — Windows is already guarded above).
+        // configured n>=3. The n>=3 collection is Unix-only: on Windows the
+        // early rejection above guarantees `fds` holds no fd>=3, so the push is
+        // dead code there — cfg-gate it to make that explicit (and avoid an
+        // unused-`mut` warning on Windows where nothing is pushed).
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut v: Vec<Fd> = std_slots.to_vec();
+        #[cfg(unix)]
         for &fd in fds.keys() {
             if fd.raw() >= 3 {
                 v.push(fd);
@@ -113,12 +118,28 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
         }
     }
 
+    // Phase 1 (before spawn): root detection + pre-spawn containment setup. This
+    // MUST run before the command-fds block below so that command-fds installs
+    // the LAST pre_exec hook. Why ordering matters: pre_exec hooks run in
+    // registration order in the forked child. The Linux cgroup self-placement
+    // hook (registered inside `prepare`) writes "0" to a pre-opened cgroup.procs
+    // fd whose CLOEXEC is cleared (so it is inherited across fork). If
+    // command-fds' dup2 ran FIRST, it could dup2 the user's fd over the number
+    // that cgroup.procs fd occupies — closing/replacing it — so the later cgroup
+    // write would hit a closed/wrong fd (silent CgroupV2->ProcessGroup downgrade,
+    // or a stray "0" corrupting the user's fd). By running command-fds LAST, the
+    // cgroup write+close happens while its fd is still valid; command-fds may then
+    // freely reuse the now-closed slot. Net child order: std stdio (0/1/2) ->
+    // containment pre_execs (cgroup placement / setsid) -> command-fds dup2 (last).
+    let prepared = crate::containment::prepare(&mut std_cmd, &cmd.contain_request());
+
     // On Unix, hand n>=3 child ends to command-fds. This installs a pre_exec hook
-    // that dup2's each OwnedFd to its target number post-fork. Ordering: std dup2's
-    // 0/1/2 before pre_exec hooks run (std disables posix_spawn when hooks are
-    // registered), so our n>=3 mappings never clobber the std stdio fds.
-    // FdMappingCollision is unreachable: child_ends keys come from a BTreeMap, so
-    // each child fd number is unique.
+    // that dup2's each OwnedFd to its target number post-fork. It is registered
+    // LAST (after `prepare` above) so its dup2 cannot clobber the cgroup
+    // self-placement fd; std also dup2's 0/1/2 before any pre_exec runs (std
+    // disables posix_spawn when hooks are registered), so our n>=3 mappings never
+    // clobber the std stdio fds either. FdMappingCollision is unreachable:
+    // child_ends keys come from a BTreeMap, so each child fd number is unique.
     #[cfg(unix)]
     {
         use command_fds::{CommandFdExt, FdMapping};
@@ -137,8 +158,6 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
         }
     }
 
-    // Phase 1 (before spawn): root detection + (later tasks) pre-spawn setup.
-    let prepared = crate::containment::prepare(&mut std_cmd, &cmd.contain_request());
     // We own the std Child so containment can job-assign + resume it (Task 5).
     let child = std_cmd.spawn().map_err(Error::Io)?;
     // Phase 2 (after spawn, before adopt): attach the mechanism (job/cgroup/...).
