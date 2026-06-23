@@ -439,14 +439,10 @@ fn unix_fd3_inherit_is_rejected() {
 fn unix_fd3_file_round_trips() {
     use std::io::{Seek, Write};
 
-    // Write a payload to a temp file, then rewind for the child to read.
-    let mut tmp = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(std::env::temp_dir().join("subprocess_fd3_test.tmp"))
-        .expect("open tmpfile");
+    // Write a payload to a unique temp file, then rewind for the child to read.
+    // `tempfile()` gives a process-unique, auto-cleaned file so two concurrent
+    // `cargo test` runs cannot collide on a shared fixed name.
+    let mut tmp = tempfile::tempfile().expect("create tmpfile");
     tmp.write_all(b"from file via fd3").expect("write tmpfile");
     tmp.seek(std::io::SeekFrom::Start(0)).expect("seek");
 
@@ -958,12 +954,42 @@ fn treewalk_kills_process_group_escapee() {
 /// Drop kills the whole contained tree. Mirrors `drop_kills_and_reaps_the_child`
 /// (the lone-child case) but wraps a contained `spawn-grandchild` tree so the
 /// grandchild must also die. Proof of death: the grandchild's control socket
-/// EOFs (Unix) or ConnectionResets (Windows) — the same C3 death-watch used by
-/// `kill_tree` tests above.
+/// closes — either a graceful EOF (n==0) or a ConnectionReset; the match below
+/// accepts EITHER on ALL platforms (the OS may surface either form on any host).
 #[cfg(any(unix, windows))]
 #[test]
 fn drop_kills_contained_tree() {
     let (child, mut gc_stream) = spawn_contained_tree();
+    // Assert containment was actually established BEFORE dropping, so a failure
+    // here (e.g. the tree survived drop) is diagnosable as "containment was set
+    // up" vs "containment never engaged". spawn_contained_tree uses contain()
+    // (Strongest), so the achieved mechanism is the host's strongest.
+    assert_ne!(
+        child.containment(),
+        subprocess::Containment::None,
+        "drop test requires real containment; got None"
+    );
+    #[cfg(windows)]
+    assert_eq!(child.containment(), subprocess::Containment::JobObject);
+    #[cfg(target_os = "linux")]
+    assert!(
+        matches!(
+            child.containment(),
+            subprocess::Containment::CgroupV2 | subprocess::Containment::ProcessGroup
+        ),
+        "Linux must use CgroupV2 or ProcessGroup, got {:?}",
+        child.containment()
+    );
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
+    assert!(
+        matches!(
+            child.containment(),
+            subprocess::Containment::ProcessGroup | subprocess::Containment::Session
+        ),
+        "macOS/BSD must use ProcessGroup or Session, got {:?}",
+        child.containment()
+    );
+
     // Drop triggers: attached.hard_kill() → shared.kill() → shared.wait()
     drop(child);
 

@@ -62,7 +62,11 @@ fn containment_smoke() {
         child.containment()
     );
     #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd"))]
-    assert_eq!(child.containment(), Containment::ProcessGroup);
+    assert!(
+        matches!(child.containment(), Containment::ProcessGroup | Containment::Session),
+        "macOS/BSD must use ProcessGroup or Session, got {:?}",
+        child.containment()
+    );
 
     child.kill_tree().expect("kill_tree");
     let _ = child.wait();

@@ -318,7 +318,14 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                 // Nested TreeWalk: the root's walk already covers this subtree.
                 return Ok((Containment::TreeWalk, Attached::None));
             } else {
-                // Nested: joined the ancestor's group.
+                // Nested (non-TreeWalk): this child inherited the ancestor's
+                // grouping rather than creating its own. For a Strongest root the
+                // ancestor's group is its process group; for a Session root the
+                // ancestor's group is the session's initial process group (the
+                // session leader's pgid). Either way this nested child is itself
+                // neither a group nor a session leader, so reporting
+                // `Containment::ProcessGroup` (with `Attached::None` — the root
+                // owns teardown) is the correct, honest descriptor.
                 return Ok((Containment::ProcessGroup, Attached::None));
             }
         }
@@ -352,7 +359,12 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                 // Nested TreeWalk: covered by the root's walk.
                 return Ok((Containment::TreeWalk, Attached::None));
             } else {
-                // Nested: joined the ancestor's group/session.
+                // Nested (non-TreeWalk): inherited the ancestor's grouping. For a
+                // Session root the ancestor's group is the session's initial
+                // process group (the session leader's pgid); for a Strongest root
+                // it is the ancestor's process group. This nested child is not
+                // itself a session leader, so reporting `Containment::ProcessGroup`
+                // (with `Attached::None` — the root owns teardown) is correct.
                 return Ok((Containment::ProcessGroup, Attached::None));
             }
         }

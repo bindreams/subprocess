@@ -87,6 +87,10 @@ pub(crate) fn descendants_with(
     // Pids already accepted, so a duplicate edge (e.g. a snapshot that lists a
     // pid twice) never enumerates/kills the same process twice.
     let mut accepted: std::collections::HashSet<RawPid> = std::collections::HashSet::new();
+    // Memoize identity resolution per pid so `resolve(pid)` runs at most once per
+    // pid even when an edge is re-examined across frontier iterations or a pid
+    // appears in multiple edges; identity is stable for the duration of the walk.
+    let mut resolved: std::collections::HashMap<RawPid, Option<ProcessId>> = std::collections::HashMap::new();
 
     while !frontier.is_empty() {
         let mut next: Vec<RawPid> = Vec::new();
@@ -102,7 +106,8 @@ pub(crate) fn descendants_with(
             if pid == ppid {
                 continue;
             }
-            match resolve(pid) {
+            let id = *resolved.entry(pid).or_insert_with(|| resolve(pid));
+            match id {
                 Some(id) if keep(id.start_token_raw()) => {
                     if accepted.insert(pid) {
                         result.push(id);
