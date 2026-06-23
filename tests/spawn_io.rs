@@ -687,6 +687,29 @@ fn windows_kill_tree_reaps_the_grandchild() {
     }
 }
 
+/// `terminate_tree` under JobObject containment reaps the whole tree. The
+/// JobObject `terminate` path sends CTRL_BREAK to the root's process group; the
+/// grandchild (spawned plainly by the root, not contained itself) shares that
+/// console group and dies too. Proof of death: the grandchild's control socket
+/// EOFs / ConnectionReset — never a timer or an is_alive() race.
+#[cfg(windows)]
+#[test]
+fn windows_terminate_tree_reaps_the_grandchild() {
+    let (child, mut gc_stream) = spawn_contained_tree();
+    assert_eq!(child.containment(), subprocess::Containment::JobObject);
+
+    child.terminate_tree().expect("terminate_tree");
+    let _ = child.wait(); // reap the root
+
+    let mut buf = [0u8; 1];
+    match gc_stream.read(&mut buf) {
+        Ok(0) => {}                                                     // graceful EOF — grandchild exited
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {} // forceful — also proof of death
+        Ok(n) => panic!("expected EOF/ConnectionReset after terminate_tree, got {n} bytes"),
+        Err(e) => panic!("unexpected error reading grandchild control socket: {e}"),
+    }
+}
+
 /// Probe that our child is inside OUR job object (not just any job).
 /// Uses the test-only `Child::test_job_handle_contains_self()` accessor so `IsProcessInJob`
 /// asks about the handle we created, not an inherited one.
@@ -867,6 +890,31 @@ fn treewalk_kill_tree_reaps_the_grandchild() {
     }
 }
 
+/// `terminate_tree` under TreeWalk reaps the whole tree. Unix: TreeWalk's
+/// terminate SIGTERMs each genuine identity (root then descendants); the
+/// control-block grandchild has no SIGTERM handler so the default action kills
+/// it. Windows: terminate sends CTRL_BREAK to the root's process group, which
+/// the grandchild shares (it was NOT spawned contained), so it dies too. Proof
+/// of death is the grandchild's control socket EOFing / ConnectionReset — never
+/// a timer or an is_alive() race.
+#[cfg(any(unix, windows))]
+#[test]
+fn treewalk_terminate_tree_reaps_the_grandchild() {
+    let (child, mut gc_stream) = spawn_treewalk_tree();
+    assert_eq!(child.containment(), subprocess::Containment::TreeWalk);
+
+    child.terminate_tree().expect("terminate_tree");
+    let _ = child.wait(); // reap the root
+
+    let mut buf = [0u8; 1];
+    match gc_stream.read(&mut buf) {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Ok(n) => panic!("expected EOF/ConnectionReset after terminate_tree, got {n} bytes"),
+        Err(e) => panic!("unexpected error reading grandchild control socket: {e}"),
+    }
+}
+
 /// Prove TreeWalk's distinguishing capability: it kills a child that has
 /// `setsid`'d out of any process group/session — which a `killpg`-based teardown
 /// aimed at the original pgid would miss. The intermediate child escapes via
@@ -960,4 +1008,34 @@ fn linux_cgroup_v2_kill_tree_reaps_the_grandchild() {
     let mut buf = [0u8; 1];
     let n = gc_stream.read(&mut buf).expect("read grandchild control socket");
     assert_eq!(n, 0, "cgroup.kill must kill the grandchild, not just the root");
+}
+
+/// `terminate_tree` under cgroup v2 containment. Mirrors the kill_tree cgroup
+/// test but exercises the SIGTERM path (`CgroupLeaf::terminate` SIGTERMs every
+/// pid in cgroup.procs). The control-block grandchild has no SIGTERM handler so
+/// the default action kills it. Gated on SUBPROCESS_TEST_CGROUP — a true no-op
+/// when unprovisioned, but FAILS loudly (CgroupV2 assertion) when the marker is
+/// set without a usable delegated cgroup. Proof of death: grandchild socket EOF.
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_cgroup_v2_terminate_tree_reaps_the_grandchild() {
+    if std::env::var_os("SUBPROCESS_TEST_CGROUP").is_none() {
+        return; // unprovisioned: not a CI-cgroup environment.
+    }
+    let (child, mut gc_stream) = spawn_contained_tree();
+    assert_eq!(
+        child.containment(),
+        subprocess::Containment::CgroupV2,
+        "expected CgroupV2 containment but got {:?}; \
+         is a delegated cgroup v2 slice available?",
+        child.containment()
+    );
+
+    child.terminate_tree().expect("terminate_tree");
+    let _ = child.wait(); // reap the root
+
+    // Deterministic proof: the grandchild's control socket EOFs on its death.
+    let mut buf = [0u8; 1];
+    let n = gc_stream.read(&mut buf).expect("read grandchild control socket");
+    assert_eq!(n, 0, "cgroup terminate must SIGTERM the grandchild, not just the root");
 }
