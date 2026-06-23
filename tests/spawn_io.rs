@@ -838,8 +838,19 @@ fn unix_session_child_is_own_session_leader() {
 /// Spawn a contained tree using `ContainMode::TreeWalk` and return the handles.
 /// Sibling of `spawn_session_tree`/`spawn_contained_tree`; selects the
 /// identity-aware walk directly. Available on `any(unix, windows)`.
+///
+/// Returns `(child, grandchild_stream, root_stream)`. **The caller MUST keep
+/// `root_stream` alive until after the teardown call.** TreeWalk enumerates the
+/// live `/proc` (or per-OS) ppid tree at kill time; if the root process exited
+/// first, the OS reparents the grandchild to a subreaper and it is no longer a
+/// descendant of the root in the ppid tree — the documented "reparented orphan"
+/// case TreeWalk cannot reach. The `spawn-grandchild` root blocks reading its
+/// control socket and exits on EOF, so dropping `root_stream` early would kill
+/// the root and orphan the grandchild. Kernel-container mechanisms (pgroup /
+/// cgroup / job) are reparenting-immune, so `spawn_contained_tree` need not do
+/// this; TreeWalk specifically does.
 #[cfg(any(unix, windows))]
-fn spawn_treewalk_tree() -> (subprocess::Child, std::net::TcpStream) {
+fn spawn_treewalk_tree() -> (subprocess::Child, std::net::TcpStream, std::net::TcpStream) {
     use std::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind control listener");
     let addr = listener.local_addr().unwrap().to_string();
@@ -849,15 +860,17 @@ fn spawn_treewalk_tree() -> (subprocess::Child, std::net::TcpStream) {
     cmd.contain_with(subprocess::ContainMode::TreeWalk);
     let child = cmd.spawn().expect("spawn tree-walk-contained tree");
     let mut gc = None;
+    let mut root = None;
     for _ in 0..2 {
         let (mut s, _) = listener.accept().expect("accept control conn");
         let mut tag = [0u8; 1];
         s.read_exact(&mut tag).expect("read tag");
-        if tag[0] == b'G' {
-            gc = Some(s);
+        match tag[0] {
+            b'G' => gc = Some(s),
+            _ => root = Some(s), // keep the root's socket open so the root stays alive
         }
     }
-    (child, gc.expect("grandchild connected"))
+    (child, gc.expect("grandchild connected"), root.expect("root connected"))
 }
 
 /// `ContainMode::TreeWalk` kills the whole tree by identity. Deterministic
@@ -868,7 +881,9 @@ fn spawn_treewalk_tree() -> (subprocess::Child, std::net::TcpStream) {
 #[cfg(any(unix, windows))]
 #[test]
 fn treewalk_kill_tree_reaps_the_grandchild() {
-    let (child, mut gc_stream) = spawn_treewalk_tree();
+    // Hold `_root_stream` for the whole test: it keeps the root alive so TreeWalk
+    // enumerates the grandchild as a live descendant (not a reparented orphan).
+    let (child, mut gc_stream, _root_stream) = spawn_treewalk_tree();
     assert_eq!(child.containment(), subprocess::Containment::TreeWalk);
 
     child.kill_tree().expect("kill_tree");
@@ -896,7 +911,9 @@ fn treewalk_kill_tree_reaps_the_grandchild() {
 #[cfg(any(unix, windows))]
 #[test]
 fn treewalk_terminate_tree_reaps_the_grandchild() {
-    let (child, mut gc_stream) = spawn_treewalk_tree();
+    // Hold `_root_stream` so the root stays alive through teardown (see
+    // spawn_treewalk_tree): TreeWalk must enumerate a live root's descendants.
+    let (child, mut gc_stream, _root_stream) = spawn_treewalk_tree();
     assert_eq!(child.containment(), subprocess::Containment::TreeWalk);
 
     child.terminate_tree().expect("terminate_tree");
@@ -931,15 +948,20 @@ fn treewalk_kills_process_group_escapee() {
     assert_eq!(child.containment(), subprocess::Containment::TreeWalk);
 
     let mut gc = None;
+    let mut root = None;
     for _ in 0..2 {
         let (mut s, _) = listener.accept().expect("accept control conn");
         let mut tag = [0u8; 1];
         s.read_exact(&mut tag).expect("read tag");
-        if tag[0] == b'G' {
-            gc = Some(s);
+        match tag[0] {
+            b'G' => gc = Some(s),
+            _ => root = Some(s), // keep the root alive (see spawn_treewalk_tree)
         }
     }
     let mut gc_stream = gc.expect("grandchild connected");
+    // Hold the root's socket open so the escapee root stays alive until kill_tree;
+    // otherwise it exits, the grandchild is reparented, and TreeWalk can't reach it.
+    let _root_stream = root.expect("root connected");
 
     child.kill_tree().expect("kill_tree");
     let _ = child.wait();
