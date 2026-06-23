@@ -107,16 +107,15 @@ pub(crate) fn descendants_with(
                 continue;
             }
             let id = *resolved.entry(pid).or_insert_with(|| resolve(pid));
-            match id {
-                Some(id) if keep(id.start_token_raw()) => {
-                    if accepted.insert(pid) {
-                        result.push(id);
-                        next.push(pid);
-                    }
-                }
-                // Resolvable but token says impostor (recycled pid / stale ppid),
-                // or unresolvable (already gone): drop the whole subtree under it.
-                _ => {}
+            // Unresolvable (already gone), or resolvable but the token says
+            // impostor (recycled pid / stale ppid): drop the whole subtree under it.
+            let Some(id) = id else { continue };
+            // `keep` (token rule) first; `accepted.insert` dedups so a duplicate
+            // edge never enumerates/kills the same process twice (short-circuit
+            // means insert runs only for a kept pid — same as the prior guard).
+            if keep(id.start_token_raw()) && accepted.insert(pid) {
+                result.push(id);
+                next.push(pid);
             }
         }
         pending = still_pending;
