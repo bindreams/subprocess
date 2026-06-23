@@ -163,18 +163,23 @@ pub(crate) fn spawn(cmd: &mut Command) -> Result<Child, Error> {
     // Phase 2 (after spawn, before adopt): attach the mechanism (job/cgroup/...).
     // `prepared` is consumed here: Linux cgroup leaf ownership moves to Attached::Cgroup.
     let (containment, attached) = crate::containment::attach(&child, prepared)?;
-    // Adopt AFTER resume so SharedChild::new sees a live (resumed) child; the
-    // whole Plan-3 wait/kill/identity/pump model is preserved.
-    let shared = SharedChild::new(child).map_err(Error::Io)?;
-    // Read the identity immediately after adopt while the child is guaranteed
-    // resolvable: on Windows shared_child holds the process handle (no PID
-    // reuse possible); on Unix the child is an un-reaped zombie until wait()
-    // so /proc still lists it.
-    let id = ProcessId::of(shared.id()).ok_or_else(|| {
+    // Read identity BEFORE adopting into SharedChild. `SharedChild::new` calls
+    // `try_wait()`, which REAPS an already-exited child — and a short-lived child
+    // (e.g. `exit 0`, `sid-report`) can exit before we reach this point. Once
+    // reaped, /proc/<pid> is gone and the identity is unresolvable (observed as a
+    // load-dependent "vanished" race under parallel spawns). While we still own
+    // the un-reaped `std::process::Child`, the child is at worst a zombie — on
+    // Unix its /proc entry persists; on Windows the std Child pins the process
+    // handle so the pid cannot be reused — so this read is race-free.
+    let id = ProcessId::of(child.id()).ok_or_else(|| {
         Error::Io(std::io::Error::other(
             "spawned child vanished before its identity could be read",
         ))
     })?;
+    // Adopt AFTER the identity read (and after Task-5 resume) so SharedChild's
+    // internal try_wait can reap-or-track without losing the identity; the whole
+    // Plan-3 wait/kill/identity/pump model is preserved.
+    let shared = SharedChild::new(child).map_err(Error::Io)?;
 
     Ok(Child::from_parts(
         shared,
