@@ -152,3 +152,26 @@ fn unresolvable_candidate_is_skipped() {
     let got = descendants_with(root(), &parents, true, resolver(&tokens));
     assert!(got.is_empty(), "gone candidate and its subtree are skipped");
 }
+
+// One-level child filter keeps only genuine direct children =====
+
+#[test]
+fn children_of_keeps_one_level_genuine_children_only() {
+    use super::{children_of_with, ALLOW_EQUAL_TOKEN};
+    use crate::identity::ProcessId;
+    // root 100/tok50; direct child 101/tok60 (genuine, tok>root); grandchild 102 (ppid
+    // 101, not one level); impostor 103 ppid 100 tok40 (created before root => excluded).
+    let root = ProcessId::from_parts_for_test(100, 50);
+    let parents = [(101, 100), (102, 101), (103, 100)];
+    let resolve = |pid: u32| match pid {
+        101 => Some(ProcessId::from_parts_for_test(101, 60)),
+        102 => Some(ProcessId::from_parts_for_test(102, 70)),
+        103 => Some(ProcessId::from_parts_for_test(103, 40)),
+        _ => None,
+    };
+    let pids: Vec<u32> = children_of_with(root, &parents, ALLOW_EQUAL_TOKEN, resolve)
+        .iter()
+        .map(|id| id.pid())
+        .collect();
+    assert_eq!(pids, vec![101]);
+}

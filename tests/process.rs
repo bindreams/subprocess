@@ -93,3 +93,23 @@ fn from_pid_resolves_a_live_foreign_child_then_reports_it_dead() {
     child.wait().expect("reap"); // synchronously confirm exit before the liveness assertion
     assert!(!p.is_alive(), "a killed+reaped foreign process must report not-alive");
 }
+
+#[test]
+fn parent_and_children_resolve_the_spawned_tree() {
+    let (child, mut sock) = spawn_blocker();
+    let me = subprocess::Process::current();
+    let kid = subprocess::Process::from_pid(child.id().pid()).expect("child resolves");
+
+    assert_eq!(kid.parent().expect("child has a parent").id(), me.id());
+    assert!(me
+        .children(subprocess::Recursive::No)
+        .iter()
+        .any(|p| p.id() == kid.id()));
+    assert!(me
+        .children(subprocess::Recursive::Yes)
+        .iter()
+        .any(|p| p.id() == kid.id()));
+
+    sock.write_all(b"x").expect("release child");
+    let _ = child.wait();
+}

@@ -66,6 +66,32 @@ impl Process {
     pub fn wait_timeout(&self, timeout: Duration) -> Result<bool, Error> {
         crate::wait::block_until_exit(self.id, Some(timeout))
     }
+
+    /// The parent process, by identity. **Best-effort and possibly wrong on recycle:**
+    /// resolved from a `(pid, ppid)` host snapshot that carries no parent start-token, so
+    /// if the real parent exits and `ppid` is recycled in the resolution window, this can
+    /// return a DIFFERENT (impostor) process. Use only as a hint, not an identity guarantee.
+    pub fn parent(&self) -> Option<Process> {
+        let parents = crate::containment::enumerate::process_parents();
+        let ppid = parents
+            .iter()
+            .find(|&&(pid, _)| pid == self.id.pid())
+            .map(|&(_, ppid)| ppid)?;
+        ProcessId::of(ppid).map(|id| Process { id })
+    }
+
+    /// The process's children. `Recursive::No` = direct children; `Recursive::Yes` = the
+    /// whole subtree. Identity-guarded against pid-reuse by the tree-walk token rule (a
+    /// candidate is kept only if its start token orders at-or-after this process). Snapshot;
+    /// best-effort.
+    pub fn children(&self, recursive: Recursive) -> Vec<Process> {
+        let parents = crate::containment::enumerate::process_parents();
+        let ids = match recursive {
+            Recursive::No => crate::containment::treewalk::children_of(self.id, &parents),
+            Recursive::Yes => crate::containment::treewalk::descendants(self.id, &parents),
+        };
+        ids.into_iter().map(|id| Process { id }).collect()
+    }
 }
 
 #[cfg(test)]
