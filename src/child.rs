@@ -63,6 +63,25 @@ impl Child {
         self.containment
     }
 
+    /// Guard for the `_tree` operations: they act on the containment group's teardown
+    /// mechanism, so a child whose mechanism is a no-op has no tree to act on — both an
+    /// uncontained child (`Attached::None`) and a nested member (`Attached::Delegated`).
+    /// Errors loudly; the lone methods (`kill`) cover that case, and the outermost
+    /// contained handle owns tree teardown.
+    fn require_contained(&self) -> Result<(), Error> {
+        if !self.attached.is_actionable() {
+            return Err(Error::Unsupported {
+                op: "tree teardown (kill_tree / terminate_tree)".into(),
+                platform: std::env::consts::OS,
+                detail: "this child holds no actionable tree-teardown mechanism (uncontained, \
+                         or a nested member of an ancestor's containment group). Use kill() for a \
+                         lone process, or tear down the tree via the outermost .contain()ed handle."
+                    .into(),
+            });
+        }
+        Ok(())
+    }
+
     /// This child's stable identity (see [`crate::identity::ProcessId`]).
     pub fn id(&self) -> ProcessId {
         self.id
@@ -90,19 +109,33 @@ impl Child {
         self.shared.kill().map_err(Error::Io)
     }
 
-    /// Hard-kill the contained tree (or the lone process if uncontained).
+    /// Hard-kill the contained tree. Requires an actionable containment mechanism
+    /// (errors `Unsupported` otherwise — use `kill()` for a lone process).
     pub fn kill_tree(&self) -> Result<(), Error> {
+        self.require_contained()?;
         let group_result = self.attached.hard_kill();
-        // Also kill the direct child (covers the uncontained / nested-no-group case).
-        // Discard the direct-kill result: already-dead is Ok on all platforms, and
-        // an error here is superseded by a group-level error from hard_kill above.
-        let _ = self.shared.kill();
-        group_result
+        // Backstop for the TreeWalk mechanism: its hard_kill kills the root by identity,
+        // which no-ops if `ProcessId::of` transiently fails to resolve the root — this
+        // handle-based kill covers that, so its failure is contract-relevant (not pure
+        // redundancy). Redundant for group modes (killpg/cgroup.kill/TerminateJobObject
+        // already reach the root) and idempotent there. Surface its error only when the
+        // group teardown itself succeeded (`and`); a group-teardown error takes priority.
+        let backstop = self.shared.kill().map_err(Error::Io);
+        group_result.and(backstop)
     }
 
-    /// Send the graceful termination signal to the contained group (signal-only;
-    /// does not wait or reap). Graceful escalation with a deadline is Plan 5.
+    /// Send the graceful termination signal to the contained group — `SIGTERM` via
+    /// `killpg`/cgroup, or `CTRL_BREAK` to the job/console group. **Signal-only:** does
+    /// not wait or reap. Requires an actionable containment mechanism (errors
+    /// `Unsupported` otherwise). Cooperative best-effort: on the `TreeWalk` mechanism a
+    /// descendant whose identity transiently fails to resolve is intentionally left
+    /// unsignaled; `kill_tree` is the guaranteed hard teardown. Pairing this with a
+    /// reaping wait and then `kill_tree` (a graceful→hard escalation) is `graceful_shutdown_tree`,
+    /// deferred to a later release: a correct version must hard-sweep BEFORE the root is
+    /// reaped (a reaping wait then `killpg` is the documented PGID-after-reap race), which
+    /// needs a non-reaping wait this crate does not yet have.
     pub fn terminate_tree(&self) -> Result<(), Error> {
+        self.require_contained()?;
         self.attached.terminate(self.shared.id())
     }
 
