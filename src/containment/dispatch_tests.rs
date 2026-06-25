@@ -75,13 +75,13 @@ fn attached_is_actionable() {
 }
 
 /// Drives the real `attach()` nested arms (not a hand-built variant): a nested
-/// (`!is_root`) contained spawn must yield `Attached::Delegated` for BOTH a kernel
-/// mechanism (Strongest) and TreeWalk, so a nested member's `_tree` ops error rather
-/// than silently no-op.
+/// (`!is_root`) contained spawn must yield BOTH halves of the delegated pair —
+/// `Containment::Delegated` and `Attached::Delegated` — for a kernel mechanism
+/// (Strongest) and TreeWalk, so `containment()` predicts the `_tree` error.
 #[test]
 fn nested_attach_is_delegated() {
     use super::{attach, Attached, Prepared};
-    use crate::containment::ContainMode;
+    use crate::containment::{ContainMode, Containment};
 
     fn spawn_trivial() -> std::process::Child {
         // attach()'s nested arms don't touch the child, so an exited child is fine.
@@ -102,11 +102,16 @@ fn nested_attach_is_delegated() {
             #[cfg(target_os = "linux")]
             cgroup_leaf: None,
         };
-        let (_containment, attached) = attach(&child, prepared).expect("attach nested");
+        let (containment, attached) = attach(&child, prepared).expect("attach nested");
         // Reap before asserting: `attached` is owned and independent of `child`, so a
         // failing assertion must not leak the helper (the nested arms don't touch it).
         let _ = child.kill();
         let _ = child.wait();
+        assert_eq!(
+            containment,
+            Containment::Delegated,
+            "nested member ({mode:?}) must report Containment::Delegated, got {containment:?}"
+        );
         assert!(
             matches!(attached, Attached::Delegated),
             "nested member ({mode:?}) must be Attached::Delegated, got {attached:?}"

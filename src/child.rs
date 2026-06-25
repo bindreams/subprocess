@@ -58,7 +58,10 @@ impl Child {
         }
     }
 
-    /// The tree-teardown mechanism actually established for this child.
+    /// The tree-teardown mechanism for this child. A nested member of an ancestor's
+    /// containment group reports [`Containment::Delegated`] (the root owns teardown); an
+    /// uncontained child reports [`Containment::None`]. Use [`Containment::can_teardown`]
+    /// to predict whether `kill_tree`/`terminate_tree` act or return `Unsupported`.
     pub fn containment(&self) -> Containment {
         self.containment
     }
@@ -67,6 +70,11 @@ impl Child {
     /// mechanism, so a child whose mechanism is a no-op has no tree to act on — both an
     /// uncontained child (`Attached::None`) and a nested member (`Attached::Delegated`).
     fn require_contained(&self) -> Result<(), Error> {
+        debug_assert_eq!(
+            self.containment.can_teardown(),
+            self.attached.is_actionable(),
+            "Containment/Attached actionability diverged"
+        );
         if !self.attached.is_actionable() {
             return Err(Error::Unsupported {
                 op: "tree teardown (kill_tree / terminate_tree)".into(),
