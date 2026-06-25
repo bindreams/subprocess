@@ -66,12 +66,16 @@ fn attached_is_actionable() {
     use super::Attached;
     // No teardown mechanism -> not actionable (the _tree guard rejects these).
     assert!(!Attached::None.is_actionable()); // uncontained / lone
-    assert!(!Attached::Delegated.is_actionable()); // nested member (ancestor owns teardown)
-                                                   // Every real mechanism is actionable; only the two cheaply-constructible ones are
-                                                   // checked here (Cgroup/JobObject hold OS resources).
+    assert!(!Attached::Delegated.is_actionable());
+    // Every real mechanism is actionable. Cheap variants are built inline; Cgroup/JobObject
+    // need an OS handle, so a test-only constructor builds one (asserted on its own platform).
     assert!(Attached::TreeWalk(crate::identity::ProcessId::current()).is_actionable());
     #[cfg(unix)]
     assert!(Attached::ProcessGroup(0).is_actionable());
+    #[cfg(target_os = "linux")]
+    assert!(Attached::Cgroup(crate::containment::cgroup::CgroupLeaf::placeholder_for_test()).is_actionable());
+    #[cfg(windows)]
+    assert!(Attached::JobObject(crate::containment::windows::JobHandle::create_empty_for_test()).is_actionable());
 }
 
 /// Drives the real `attach()` nested arms (not a hand-built variant): a nested
