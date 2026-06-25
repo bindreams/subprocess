@@ -135,10 +135,9 @@ fn tree_ops_on_uncontained_child_are_unsupported() {
 
 #[test]
 fn nested_member_kill_tree_is_unsupported_end_to_end() {
-    // Spawn the reporter CONTAINED so it inherits NESTED_ENV; its crate-spawned grandchild
-    // is therefore a nested member (Attached::Delegated), whose kill_tree() must be
-    // Unsupported — proving the full prepare->attach->require_contained chain for a REAL
-    // nested member, not just a hand-built Prepared.
+    // Spawn the reporter CONTAINED so its crate-spawned grandchild is a real nested member
+    // (Attached::Delegated), exercising the full prepare->attach->require_contained chain
+    // rather than a hand-built Prepared.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     let mut cmd = Command::new();

@@ -67,10 +67,8 @@ fn attached_is_actionable() {
     // No teardown mechanism -> not actionable (the _tree guard rejects these).
     assert!(!Attached::None.is_actionable()); // uncontained / lone
     assert!(!Attached::Delegated.is_actionable()); // nested member (ancestor owns teardown)
-                                                   // Every real mechanism is actionable. TreeWalk needs only a ProcessId; ProcessGroup
-                                                   // an i32 (cfg(unix)). (Cgroup/JobObject hold OS resources, not cheaply constructible;
-                                                   // the predicate is `!matches!(None | Delegated)`, so a new mechanism variant defaults
-                                                   // to actionable — the correct default.)
+                                                   // Every real mechanism is actionable; only the two cheaply-constructible ones are
+                                                   // checked here (Cgroup/JobObject hold OS resources).
     assert!(Attached::TreeWalk(crate::identity::ProcessId::current()).is_actionable());
     #[cfg(unix)]
     assert!(Attached::ProcessGroup(0).is_actionable());

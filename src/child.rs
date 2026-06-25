@@ -66,8 +66,6 @@ impl Child {
     /// Guard for the `_tree` operations: they act on the containment group's teardown
     /// mechanism, so a child whose mechanism is a no-op has no tree to act on — both an
     /// uncontained child (`Attached::None`) and a nested member (`Attached::Delegated`).
-    /// Errors loudly; the lone methods (`kill`) cover that case, and the outermost
-    /// contained handle owns tree teardown.
     fn require_contained(&self) -> Result<(), Error> {
         if !self.attached.is_actionable() {
             return Err(Error::Unsupported {
@@ -117,9 +115,9 @@ impl Child {
         // Backstop for the TreeWalk mechanism: its hard_kill kills the root by identity,
         // which no-ops if `ProcessId::of` transiently fails to resolve the root — this
         // handle-based kill covers that, so its failure is contract-relevant (not pure
-        // redundancy). Redundant for group modes (killpg/cgroup.kill/TerminateJobObject
-        // already reach the root) and idempotent there. Surface its error only when the
-        // group teardown itself succeeded (`and`); a group-teardown error takes priority.
+        // redundancy). Redundant-but-idempotent for group modes (killpg/cgroup.kill/
+        // TerminateJobObject already reach the root). Surface its error only when group
+        // teardown succeeded; a group-teardown error takes priority (`and`).
         let backstop = self.shared.kill().map_err(Error::Io);
         group_result.and(backstop)
     }
@@ -129,11 +127,7 @@ impl Child {
     /// not wait or reap. Requires an actionable containment mechanism (errors
     /// `Unsupported` otherwise). Cooperative best-effort: on the `TreeWalk` mechanism a
     /// descendant whose identity transiently fails to resolve is intentionally left
-    /// unsignaled; `kill_tree` is the guaranteed hard teardown. Pairing this with a
-    /// reaping wait and then `kill_tree` (a graceful→hard escalation) is `graceful_shutdown_tree`,
-    /// deferred to a later release: a correct version must hard-sweep BEFORE the root is
-    /// reaped (a reaping wait then `killpg` is the documented PGID-after-reap race), which
-    /// needs a non-reaping wait this crate does not yet have.
+    /// unsignaled; `kill_tree` is the guaranteed hard teardown.
     pub fn terminate_tree(&self) -> Result<(), Error> {
         self.require_contained()?;
         self.attached.terminate(self.shared.id())

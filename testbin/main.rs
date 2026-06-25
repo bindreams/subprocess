@@ -1,7 +1,6 @@
 //! Test-only helper spawned by the crate's integration tests. std-only, with
 //! one exception: the `report-nested-kill-tree` mode uses the `subprocess` crate
-//! (this is a `[[bin]]` in the crate's own package, so it can) to exercise the
-//! real nested-member `kill_tree` path. Behavior is selected by argv[1].
+//! to exercise the real nested-member `kill_tree` path. Behavior is selected by argv[1].
 
 use std::io::{Read, Write};
 use std::process::exit;
