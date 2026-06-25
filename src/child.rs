@@ -243,7 +243,9 @@ impl Drop for Child {
             return; // detached / opted out
         }
         // Hard-kill the contained tree (if any) then also the direct child, then reap.
-        // Order matters on Unix: kill BEFORE wait (reaping frees the PID).
+        // Order matters on Unix: kill BEFORE wait (reaping frees the PID). A nested
+        // `Delegated` (or uncontained) handle owns no tree, so hard_kill no-ops and only
+        // its direct child dies here — a nested member's subtree falls to the outermost root.
         let _ = self.attached.hard_kill();
         let _ = self.shared.kill();
         let _ = self.shared.wait();

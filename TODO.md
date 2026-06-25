@@ -65,6 +65,10 @@ To run the live test in CI:
 
 - [ ] (Plan 4) Implement raw backend (CreateProcess/execve) to support independent `executable` + `commandline` on Windows — std has no stable API to set `lpApplicationName` independently of `lpCommandLine`, so the std-only backend forces `argv[0]` to equal the executable when both are set.
 
+## Lifecycle / graceful shutdown (from Plan 5)
+
+- [ ] (Plan 6) Graceful-escalation trio deferred from Plan 5: `terminate()` (Unix-only lone `SIGTERM`), `graceful_shutdown(Duration)` (lone soft→hard escalation), `graceful_shutdown_tree(Duration)` (tree soft→hard escalation). Race-free implementation needs Plan-6 primitives: `pidfd_send_signal` (Linux identity-bound signal — closes lone `terminate`'s check-then-act PID-reuse race against a concurrent reap; macOS has no equivalent) and a non-reaping wait-with-timeout (so a tree hard-sweep runs BEFORE the root is reaped, avoiding the `killpg`-after-reap race that `shared_child`'s reaping wait can't). Settled design (Plan-6 blueprint): lone graceful is Unix-only (Windows has no single-process graceful primitive — group-scoped `CTRL_BREAK` only); grace is a relative `Duration` (matches Python/.NET/Go); escalation proceeds past a failed soft signal. Full design preserved in the Plan-5 spec's "Deferred to Plan 6" section.
+
 ## Hardening / tech-debt (from foundation review)
 
 - [ ] Before publish, exclude or feature-gate `subprocess_testbin` so the test helper isn't shipped in the published crate.
