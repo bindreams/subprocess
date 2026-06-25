@@ -50,8 +50,19 @@ pub(crate) fn block_until_exit(id: ProcessId, deadline: Option<Option<Instant>>)
             tv_nsec: d.subsec_nanos() as _,
         });
         match poll(&mut fds, ts.as_ref()) {
-            Ok(0) => return Ok(false),                // timed out, still alive
-            Ok(_) => return Ok(true),                 // POLLIN/POLLHUP => exited (zombie)
+            Ok(0) => return Ok(false), // timed out, still alive
+            Ok(_) => {
+                let revents = fds[0].revents();
+                // POLLNVAL on an fd we own and hold alive is a contract violation.
+                debug_assert!(
+                    !revents.contains(PollFlags::NVAL),
+                    "pidfd reported POLLNVAL — owned-fd contract violation"
+                );
+                if revents.contains(PollFlags::ERR) {
+                    return Err(Error::Io(std::io::Error::other("pidfd poll returned POLLERR")));
+                }
+                return Ok(true); // POLLIN (zombie) / POLLHUP (reaped) => exited
+            }
             Err(rustix::io::Errno::INTR) => continue, // retry only on EINTR (no cap)
             Err(e) => return Err(Error::Io(std::io::Error::from(e))),
         }

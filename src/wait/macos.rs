@@ -53,7 +53,12 @@ pub(crate) fn block_until_exit(id: ProcessId, deadline: Option<Option<Instant>>)
         });
         match kq.kevent(&[], &mut events, timeout) {
             Ok(0) => return Ok(false), // timed out, still alive
-            Ok(_) => return Ok(true),  // NOTE_EXIT delivered
+            Ok(_) => {
+                if events[0].flags().contains(EvFlags::EV_ERROR) {
+                    return Err(Error::Io(std::io::Error::from_raw_os_error(events[0].data() as i32)));
+                }
+                return Ok(true); // NOTE_EXIT
+            }
             Err(nix::errno::Errno::EINTR) => continue,
             Err(e) => return Err(Error::Io(e.into())),
         }
