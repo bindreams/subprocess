@@ -117,3 +117,38 @@ fn child_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<subprocess::Child>();
 }
+
+#[test]
+fn tree_ops_on_uncontained_child_are_unsupported() {
+    let mut cmd = Command::new();
+    cmd.executable(testbin()).args(["subprocess_testbin", "exit", "0"]);
+    let child = cmd.spawn().expect("spawn");
+    assert_eq!(child.containment(), subprocess::Containment::None);
+    for r in [child.kill_tree(), child.terminate_tree()] {
+        assert!(
+            matches!(r, Err(subprocess::error::Error::Unsupported { .. })),
+            "uncontained _tree op must be Unsupported, got {r:?}"
+        );
+    }
+    let _ = child.wait();
+}
+
+#[test]
+fn nested_member_kill_tree_is_unsupported_end_to_end() {
+    // Spawn the reporter CONTAINED so it inherits NESTED_ENV; its crate-spawned grandchild
+    // is therefore a nested member (Attached::Delegated), whose kill_tree() must be
+    // Unsupported — proving the full prepare->attach->require_contained chain for a REAL
+    // nested member, not just a hand-built Prepared.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap().to_string();
+    let mut cmd = Command::new();
+    cmd.executable(testbin())
+        .args(["subprocess_testbin", "report-nested-kill-tree", &addr])
+        .contain();
+    let child = cmd.spawn().expect("spawn reporter");
+    let (mut sock, _) = listener.accept().expect("accept");
+    let mut tag = [0u8; 1];
+    sock.read_exact(&mut tag).expect("read report");
+    assert_eq!(&tag, b"U", "a nested member's kill_tree() must be Unsupported");
+    let _ = child.wait();
+}

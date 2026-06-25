@@ -1,5 +1,7 @@
-//! Test-only helper spawned by the crate's integration tests. std-only; does
-//! not depend on the `subprocess` crate. Behavior is selected by argv[1].
+//! Test-only helper spawned by the crate's integration tests. std-only, with
+//! one exception: the `report-nested-kill-tree` mode uses the `subprocess` crate
+//! (this is a `[[bin]]` in the crate's own package, so it can) to exercise the
+//! real nested-member `kill_tree` path. Behavior is selected by argv[1].
 
 use std::io::{Read, Write};
 use std::process::exit;
@@ -156,6 +158,21 @@ fn main() {
             let mut f = unsafe { std::fs::File::from_raw_fd(3) };
             f.write_all(token.as_bytes()).unwrap();
             f.flush().unwrap();
+        }
+        "report-nested-kill-tree" => {
+            // This process is itself spawned CONTAINED (so NESTED_ENV is set). A crate
+            // spawn here is a nested member (Attached::Delegated), whose kill_tree() must
+            // be Unsupported. Report 'U' (Unsupported) or 'O' (other) over the socket.
+            let addr = &args[2];
+            let exe = std::env::current_exe().unwrap();
+            let mut gc = subprocess::Command::new();
+            gc.executable(&exe).args(["subprocess_testbin", "exit", "0"]).contain();
+            let child = gc.spawn().unwrap();
+            let unsupported = matches!(child.kill_tree(), Err(subprocess::error::Error::Unsupported { .. }));
+            let _ = child.wait();
+            let mut sock = std::net::TcpStream::connect(addr).unwrap();
+            sock.write_all(if unsupported { b"U" } else { b"O" }).unwrap();
+            sock.flush().unwrap();
         }
         other => {
             eprintln!("subprocess_testbin: unknown mode {other:?}");
