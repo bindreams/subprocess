@@ -41,9 +41,8 @@ pub enum Containment {
 
 impl Containment {
     /// Whether this handle can drive tree teardown (`kill_tree`/`terminate_tree` act
-    /// rather than returning `Unsupported`). `false` for `None` (uncontained) and
-    /// `Delegated` (a nested member whose root owns teardown). Exhaustive (no `_`) so a
-    /// new variant must declare its disposition.
+    /// rather than returning `Unsupported`). Exhaustive (no `_`) so a new variant must
+    /// declare its disposition.
     pub fn can_teardown(&self) -> bool {
         match self {
             Containment::CgroupV2

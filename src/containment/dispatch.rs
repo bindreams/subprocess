@@ -81,8 +81,6 @@ impl Attached {
     pub(crate) fn terminate(&self, _child_pid: u32) -> Result<(), Error> {
         match self {
             Attached::None | Attached::Delegated => {
-                // Unreachable: terminate_tree() gates on require_contained(), which rejects a
-                // non-actionable mechanism.
                 debug_assert!(
                     self.is_actionable(),
                     "Attached::terminate on a non-actionable mechanism"
@@ -119,8 +117,7 @@ impl Attached {
         }
     }
 
-    /// Whether this child holds an actionable tree-teardown mechanism. Exhaustive (no `_`)
-    /// so a new mechanism variant must declare its actionability.
+    /// Whether this child holds an actionable tree-teardown mechanism.
     pub(crate) fn is_actionable(&self) -> bool {
         match self {
             Attached::None | Attached::Delegated => false,

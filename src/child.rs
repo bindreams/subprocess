@@ -58,17 +58,16 @@ impl Child {
         }
     }
 
-    /// The tree-teardown mechanism for this child. A nested member of an ancestor's
-    /// containment group reports [`Containment::Delegated`] (the root owns teardown); an
-    /// uncontained child reports [`Containment::None`]. Use [`Containment::can_teardown`]
-    /// to predict whether `kill_tree`/`terminate_tree` act or return `Unsupported`.
+    /// The tree-teardown mechanism for this child: a nested member reports
+    /// [`Containment::Delegated`], an uncontained child [`Containment::None`]. Use
+    /// [`Containment::can_teardown`] to predict whether `kill_tree`/`terminate_tree`
+    /// act or return `Unsupported`.
     pub fn containment(&self) -> Containment {
         self.containment
     }
 
     /// Guard for the `_tree` operations: they act on the containment group's teardown
-    /// mechanism, so a child whose mechanism is a no-op has no tree to act on — both an
-    /// uncontained child (`Attached::None`) and a nested member (`Attached::Delegated`).
+    /// mechanism, so a child whose mechanism is a no-op has no tree to act on.
     fn require_contained(&self) -> Result<(), Error> {
         debug_assert_eq!(
             self.containment.can_teardown(),
@@ -122,8 +121,8 @@ impl Child {
         let group_result = self.attached.hard_kill();
         // Backstop for the TreeWalk mechanism: its hard_kill kills the root by identity,
         // which no-ops if `ProcessId::of` transiently fails to resolve the root — this
-        // handle-based kill covers that, so its failure is contract-relevant (not pure
-        // redundancy). Redundant-but-idempotent for group modes (killpg/cgroup.kill/
+        // handle-based kill covers that, so its failure is contract-relevant.
+        // Redundant-but-idempotent for group modes (killpg/cgroup.kill/
         // TerminateJobObject already reach the root). Surface its error only when group
         // teardown succeeded; a group-teardown error takes priority (`and`).
         let backstop = self.shared.kill().map_err(Error::Io);
