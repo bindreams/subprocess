@@ -36,7 +36,7 @@ To run the live test in CI:
 
 ## Identity (follow-ups from Plan 2)
 
-- [ ] Add a `cfg(unix)` real-zombie integration test asserting `is_alive()==false` for an un-reaped exited child (exercises Linux `/proc` state `Z` and macOS `pbi_status==SZOMB` at RUNTIME). Needs Plan 6's foreign-wait primitive to deterministically observe a zombie without reaping. Decision logic is already host-tested on Linux via `running_from_stat`; macOS is a single `!= SZOMB`.
+- [x] Add a `cfg(unix)` real-zombie integration test asserting `is_alive()==false` for an un-reaped exited child (exercises Linux `/proc` state `Z` and macOS `pbi_status==SZOMB` at RUNTIME). Needs Plan 6's foreign-wait primitive to deterministically observe a zombie without reaping. Decision logic is already host-tested on Linux via `running_from_stat`; macOS is a single `!= SZOMB`. (Plan 6 Task 3: `is_alive_is_false_for_a_real_zombie` in `tests/process.rs`.)
 
 ## Stdio / PTY
 
