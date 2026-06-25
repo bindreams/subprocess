@@ -58,7 +58,6 @@ pub(crate) fn block_until_exit(id: ProcessId, deadline: Option<Option<Instant>>)
     }
 }
 
-#[allow(dead_code)] // foreign kill is wired in Task 3; the backend lands with the wait primitive.
 pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
     let Some(pidfd) = open_verified(id)? else { return Ok(()) };
     match pidfd_send_signal(&pidfd, Signal::KILL) {

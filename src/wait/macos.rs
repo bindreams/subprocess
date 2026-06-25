@@ -60,7 +60,6 @@ pub(crate) fn block_until_exit(id: ProcessId, deadline: Option<Option<Instant>>)
     }
 }
 
-#[allow(dead_code)] // foreign kill is wired in Task 3; the backend lands with the wait primitive.
 pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
     use nix::sys::signal::{kill as nix_kill, Signal};
     use nix::unistd::Pid;

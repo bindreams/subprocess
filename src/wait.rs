@@ -32,7 +32,6 @@ pub(crate) fn block_until_exit(id: ProcessId, timeout: Option<Duration>) -> Resu
 
 /// Hard-kill the process with identity `id` (`SIGKILL` / `TerminateProcess`),
 /// identity-verified. Already-dead ⇒ `Ok`; a real failure (no rights / `EPERM`) ⇒ `Err`.
-#[allow(dead_code)] // consumed by Task 3 (foreign kill); the backends are landed here.
 pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
     backend::kill(id)
 }

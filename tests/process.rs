@@ -113,3 +113,78 @@ fn parent_and_children_resolve_the_spawned_tree() {
     sock.write_all(b"x").expect("release child");
     let _ = child.wait();
 }
+
+#[test]
+fn foreign_kill_terminates_the_process() {
+    let (child, mut sock) = spawn_blocker();
+    let p = subprocess::Process::from_pid(child.id().pid()).expect("resolves");
+    p.kill().expect("kill");
+    let mut buf = [0u8; 1];
+    match sock.read(&mut buf) {
+        Ok(0) => {}                                                     // EOF — process died
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {} // reset — also death
+        Ok(n) => panic!("expected EOF/ConnectionReset after kill, got {n} bytes"),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+    let _ = child.wait();
+    p.kill().expect("second kill on a dead process must be Ok");
+}
+
+#[cfg(unix)]
+#[test]
+fn foreign_kill_surfaces_permission_denied() {
+    // pid 1 (init) is always alive but unkillable: SIGKILL to it is kernel-ignored. As a
+    // non-root user kill(1) returns EPERM, which Process::kill must SURFACE as Err (not
+    // swallow into Ok); as root the kernel returns Ok (init is immune). Assert the real
+    // per-privilege behavior either way — init is unharmed. This drives the Err arm of
+    // wait::kill that distinguishes "denied on a live process" from "already-dead".
+    let init = subprocess::Process::from_pid(1).expect("pid 1 resolves");
+    assert!(init.is_alive(), "init must be alive");
+    let r = init.kill();
+    // SAFETY: geteuid() takes no arguments and is always safe.
+    if unsafe { libc::geteuid() } == 0 {
+        assert!(r.is_ok(), "as root, SIGKILL to init is kernel-ignored => Ok, got {r:?}");
+    } else {
+        assert!(
+            matches!(r, Err(subprocess::error::Error::Io(_))),
+            "non-root kill of init must surface EPERM as Err, got {r:?}"
+        );
+    }
+    assert!(
+        init.is_alive(),
+        "init must survive (SIGKILL to pid 1 is kernel-ignored)"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn is_alive_is_false_for_a_real_zombie() {
+    // The deferred Plan-2 test. Spawn a RAW std child (std does NOT reap on drop), take it
+    // foreign, death-watch it to its exit, then — before reaping — assert is_alive()==false
+    // (zombie) while the identity still resolves (exists). The kernel exit edge is the sync
+    // point; no sleep. Finally reap to avoid a leak.
+    use std::io::Read;
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap().to_string();
+    // RAW std::process::Command: argv[0] is the exe path, so the testbin mode is args[1] —
+    // do NOT prepend "subprocess_testbin" the way the crate's Command requires.
+    let mut raw = std::process::Command::new(common::testbin())
+        .args(["control-block", &addr, "Z"])
+        .spawn()
+        .expect("spawn raw child");
+    let (mut sock, _) = listener.accept().expect("accept");
+    let mut tag = [0u8; 1];
+    sock.read_exact(&mut tag).expect("read tag");
+
+    let p = subprocess::Process::from_pid(raw.id()).expect("raw child resolves");
+    sock.write_all(b"x").expect("trigger exit");
+    p.wait().expect("death-watch"); // returns at the zombie instant (no reap yet)
+
+    assert!(!p.is_alive(), "an exited-but-unreaped child is a zombie => not alive");
+    assert!(
+        subprocess::Process::from_id(p.id()).is_some(),
+        "a zombie identity still resolves"
+    );
+    raw.wait().expect("reap the zombie");
+}

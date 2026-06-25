@@ -92,6 +92,16 @@ impl Process {
         };
         ids.into_iter().map(|id| Process { id }).collect()
     }
+
+    /// Hard-kill the process by identity (`SIGKILL` / `TerminateProcess`). Already-dead ⇒
+    /// `Ok`; a real failure (no rights / `EPERM` / access-denied on a live process) ⇒ `Err`.
+    /// **Race-freedom is OS-dependent:** Linux uses an identity-bound `pidfd_send_signal`
+    /// (atomic, zero pid-reuse race) and Windows pins the kernel object via its handle; macOS
+    /// has no pidfd, so it re-verifies identity immediately before `kill(2)` with a small
+    /// irreducible residual window — best-effort there, like the existing tree teardown.
+    pub fn kill(&self) -> Result<(), Error> {
+        crate::wait::kill(self.id)
+    }
 }
 
 #[cfg(test)]

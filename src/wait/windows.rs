@@ -50,7 +50,6 @@ pub(crate) fn block_until_exit(id: ProcessId, deadline: Option<Option<Instant>>)
     }
 }
 
-#[allow(dead_code)] // foreign kill is wired in Task 3; the backend lands with the wait primitive.
 pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
     if ProcessId::of(id.pid()) != Some(id) {
         return Ok(()); // gone / recycled => already-dead is success
@@ -58,10 +57,16 @@ pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
     // SAFETY: OpenProcess tolerates an invalid pid; the handle is closed on success.
     let handle = match unsafe { OpenProcess(PROCESS_TERMINATE, false, id.pid()) } {
         Ok(h) => h,
-        // Couldn't open for terminate: if the process is gone it's success; if it still
-        // exists we genuinely lack rights (access-denied) => surface it.
+        // Couldn't open for terminate. An exited process is unopenable for TERMINATE yet may
+        // still RESOLVE during the post-exit object-teardown window, so discriminate on
+        // is_alive (signaled-state, synchronously correct on exit) — NOT exists (zombie-/
+        // post-exit-inclusive): a live process here means we genuinely lack rights => Err.
         Err(e) => {
-            return if id.exists() { Err(Error::Io(e.into())) } else { Ok(()) };
+            return if id.is_alive() {
+                Err(Error::Io(e.into()))
+            } else {
+                Ok(())
+            };
         }
     };
     // SAFETY: handle is live; close on every path.
@@ -70,7 +75,7 @@ pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
     match res {
         Ok(()) => Ok(()),
         Err(e) => {
-            if id.exists() {
+            if id.is_alive() {
                 Err(Error::Io(e.into()))
             } else {
                 Ok(())
