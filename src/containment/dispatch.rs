@@ -346,13 +346,10 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                 }
                 // No cgroup leaf: fall back to process group (set pre-spawn).
                 return Ok((Containment::ProcessGroup, Attached::ProcessGroup(pgid)));
-            } else if matches!(prepared.mode, Some(ContainMode::TreeWalk)) {
-                // Nested TreeWalk: the root's walk already covers this subtree.
-                return Ok((Containment::Delegated, Attached::Delegated));
             } else {
-                // Nested (non-TreeWalk): inherited the ancestor's grouping rather than
-                // creating its own — neither a group nor a session leader. Reports
-                // `Containment::Delegated` (the root owns teardown); its `_tree` ops error.
+                // Nested member: it joined the ancestor's cgroup/process group (or the
+                // root's tree-walk) rather than creating its own, so it owns no teardown —
+                // the outermost root tears the whole tree down.
                 return Ok((Containment::Delegated, Attached::Delegated));
             }
         }
@@ -382,13 +379,10 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                     _ => Containment::ProcessGroup,
                 };
                 return Ok((containment, Attached::ProcessGroup(pgid)));
-            } else if matches!(prepared.mode, Some(ContainMode::TreeWalk)) {
-                // Nested TreeWalk: covered by the root's walk.
-                return Ok((Containment::Delegated, Attached::Delegated));
             } else {
-                // Nested (non-TreeWalk): inherited the ancestor's grouping rather than
-                // creating its own — neither a group nor a session leader. Reports
-                // `Containment::Delegated` (the root owns teardown); its `_tree` ops error.
+                // Nested member: it joined the ancestor's process group (or the root's
+                // tree-walk) rather than creating its own, so it owns no teardown — the
+                // outermost root tears the whole tree down.
                 return Ok((Containment::Delegated, Attached::Delegated));
             }
         }
@@ -415,11 +409,9 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                 Err(e) => return Err(Error::Containment { detail: e.to_string() }),
             }
         } else if prepared.mode.is_some() {
-            // Nested TreeWalk is covered by the root's walk; other modes inherit
-            // the ancestor's job (no new job created).
-            if matches!(prepared.mode, Some(ContainMode::TreeWalk)) {
-                return Ok((Containment::Delegated, Attached::Delegated));
-            }
+            // Nested member: it inherits the ancestor's job (or the root's tree-walk; no
+            // new job is created), so it owns no teardown — the outermost root's job tears
+            // the whole tree down.
             return Ok((Containment::Delegated, Attached::Delegated));
         }
     }
