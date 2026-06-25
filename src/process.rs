@@ -67,17 +67,32 @@ impl Process {
         crate::wait::block_until_exit(self.id, Some(timeout))
     }
 
-    /// The parent process, by identity. **Best-effort and possibly wrong on recycle:**
-    /// resolved from a `(pid, ppid)` host snapshot that carries no parent start-token, so
-    /// if the real parent exits and `ppid` is recycled in the resolution window, this can
-    /// return a DIFFERENT (impostor) process. Use only as a hint, not an identity guarantee.
+    /// The parent process, by identity. Identity-guarded against pid-reuse: a genuine parent
+    /// predates this child, so a recycled `ppid` naming a process created AFTER us (token after
+    /// ours) is rejected by the same token rule as [`children`](Self::children) — sound, modulo
+    /// the per-OS same-tick residual the whole crate shares. `None` if we have no resolvable
+    /// parent or `self` itself was recycled.
     pub fn parent(&self) -> Option<Process> {
+        // Anchor: a query against a recycled self pid is meaningless.
+        if !self.id.exists() {
+            return None;
+        }
         let parents = crate::containment::enumerate::process_parents();
-        let ppid = parents
-            .iter()
-            .find(|&&(pid, _)| pid == self.id.pid())
-            .map(|&(_, ppid)| ppid)?;
-        ProcessId::of(ppid).map(|id| Process { id })
+        let ppid = parents.iter().find(|&&(pid, _)| pid == self.id.pid()).map(|&(_, ppid)| ppid)?;
+        // A process is never its own parent (treewalk's convention).
+        if ppid == self.id.pid() {
+            return None;
+        }
+        let parent = ProcessId::of(ppid)?;
+        // Identity guard: a genuine parent predates this child, so the child's start token
+        // orders at-or-after the parent's. A recycled ppid names a process created AFTER us
+        // (token after ours) — reject it.
+        crate::containment::treewalk::keeps_token(
+            self.id.start_token_raw(),
+            parent.start_token_raw(),
+            crate::containment::treewalk::ALLOW_EQUAL_TOKEN,
+        )
+        .then_some(Process { id: parent })
     }
 
     /// The process's children. `Recursive::No` = direct children; `Recursive::Yes` = the
@@ -85,6 +100,10 @@ impl Process {
     /// candidate is kept only if its start token orders at-or-after this process). Snapshot;
     /// best-effort.
     pub fn children(&self, recursive: Recursive) -> Vec<Process> {
+        // Anchor: a recycled self pid maps the whole query onto a stranger.
+        if !self.id.exists() {
+            return Vec::new();
+        }
         let parents = crate::containment::enumerate::process_parents();
         let ids = match recursive {
             Recursive::No => crate::containment::treewalk::children_of(self.id, &parents),
