@@ -149,9 +149,11 @@ fn tree_ops_on_uncontained_child_are_unsupported() {
 
 #[test]
 fn nested_member_kill_tree_is_unsupported_end_to_end() {
-    // Spawn the reporter CONTAINED so its crate-spawned grandchild is a real nested member
-    // (Attached::Delegated), exercising the full prepare->attach->require_contained chain
-    // rather than a hand-built Prepared.
+    // Spawn the reporter CONTAINED so its crate-spawned grandchild is a real nested member,
+    // exercising the full prepare->attach->require_contained chain rather than a hand-built
+    // Prepared. The grandchild reports b"D" only when it is specifically Containment::Delegated
+    // (real marker detection -> attach() -> Delegated) AND kill_tree() is Unsupported, so a
+    // marker-propagation regression degrading nested -> None (also Unsupported) is caught.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().unwrap().to_string();
     let mut cmd = Command::new();
@@ -162,6 +164,9 @@ fn nested_member_kill_tree_is_unsupported_end_to_end() {
     let (mut sock, _) = listener.accept().expect("accept");
     let mut tag = [0u8; 1];
     sock.read_exact(&mut tag).expect("read report");
-    assert_eq!(&tag, b"U", "a nested member's kill_tree() must be Unsupported");
+    assert_eq!(
+        &tag, b"D",
+        "a nested member must report Containment::Delegated AND kill_tree() Unsupported"
+    );
     let _ = child.wait();
 }
