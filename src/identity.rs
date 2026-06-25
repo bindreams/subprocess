@@ -110,6 +110,15 @@ impl ProcessId {
     }
 }
 
+/// Re-verify identity on an ALREADY-OPEN Windows handle: does its creation token
+/// match `id`'s? The held handle pins the kernel object, so this is pid-reuse-safe
+/// (unlike re-resolving by raw pid). Reuses the backend FILETIME read — no duplicate
+/// packing.
+#[cfg(windows)]
+pub(crate) fn windows_handle_is(handle: windows::Win32::Foundation::HANDLE, id: ProcessId) -> bool {
+    backend::creation_token(handle) == Some(id.start)
+}
+
 #[cfg(test)]
 #[path = "identity_tests.rs"]
 mod identity_tests;

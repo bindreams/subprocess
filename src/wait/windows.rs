@@ -51,24 +51,21 @@ pub(crate) fn block_until_exit(id: ProcessId, deadline: Option<Option<Instant>>)
 }
 
 pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
-    if ProcessId::of(id.pid()) != Some(id) {
-        return Ok(()); // gone / recycled => already-dead is success
-    }
-    // SAFETY: OpenProcess tolerates an invalid pid; the handle is closed on success.
-    let handle = match unsafe { OpenProcess(PROCESS_TERMINATE, false, id.pid()) } {
+    // Open for terminate AND query, so the SAME held handle both pins the kernel object
+    // (pid-reuse-safe) and lets us re-verify identity before terminating.
+    // SAFETY: OpenProcess tolerates an invalid pid; the handle is closed on every path below.
+    let handle = match unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, id.pid()) } {
         Ok(h) => h,
-        // Couldn't open for terminate. An exited process is unopenable for TERMINATE yet may
-        // still RESOLVE during the post-exit object-teardown window, so discriminate on
-        // is_alive (signaled-state, synchronously correct on exit) — NOT exists (zombie-/
-        // post-exit-inclusive): a live process here means we genuinely lack rights => Err.
-        Err(e) => {
-            return if id.is_alive() {
-                Err(Error::Io(e.into()))
-            } else {
-                Ok(())
-            };
-        }
+        // Can't open: gone => already-dead Ok; live but denied => Err (is_alive is the
+        // signaled-state check, synchronously correct on exit — not zombie-inclusive exists).
+        Err(e) => return if id.is_alive() { Err(Error::Io(e.into())) } else { Ok(()) },
     };
+    // Re-verify identity on the HELD handle: a pid recycled before OpenProcess pins the
+    // NEW process, whose creation token won't match — abort (the original is already gone).
+    if !crate::identity::windows_handle_is(handle, id) {
+        close(handle);
+        return Ok(());
+    }
     // SAFETY: handle is live; close on every path.
     let res = unsafe { TerminateProcess(handle, 1) };
     close(handle);
