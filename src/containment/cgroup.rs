@@ -157,8 +157,8 @@ impl CgroupLeaf {
 impl CgroupLeaf {
     /// Test-only placeholder pointing at no real cgroup. Safe to construct and drop —
     /// `close(-1)` and `remove_dir` of a nonexistent path are harmless no-ops — so it is
-    /// usable ONLY for variant-level assertions (e.g. `Attached::Cgroup(_).is_actionable()`),
-    /// never for an operation that touches the fd or path.
+    /// usable ONLY for variant-level assertions, never for an operation that touches the
+    /// fd or path.
     pub(crate) fn placeholder_for_test() -> CgroupLeaf {
         CgroupLeaf {
             leaf_path: PathBuf::from("/nonexistent/subprocess-cgroup-placeholder"),

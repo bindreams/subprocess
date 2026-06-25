@@ -122,9 +122,6 @@ impl Child {
         // Backstop for the TreeWalk mechanism: its hard_kill kills the root by identity,
         // which no-ops if `ProcessId::of` transiently fails to resolve the root — this
         // handle-based kill covers that, so its failure is contract-relevant.
-        // Redundant-but-idempotent for group modes (killpg/cgroup.kill/
-        // TerminateJobObject already reach the root). Surface its error only when group
-        // teardown succeeded; a group-teardown error takes priority (`and`).
         let backstop = self.shared.kill().map_err(Error::Io);
         group_result.and(backstop)
     }
@@ -243,9 +240,7 @@ impl Drop for Child {
             return; // detached / opted out
         }
         // Hard-kill the contained tree (if any) then also the direct child, then reap.
-        // Order matters on Unix: kill BEFORE wait (reaping frees the PID). A nested
-        // `Delegated` (or uncontained) handle owns no tree, so hard_kill no-ops and only
-        // its direct child dies here — a nested member's subtree falls to the outermost root.
+        // Order matters on Unix: kill BEFORE wait (reaping frees the PID).
         let _ = self.attached.hard_kill();
         let _ = self.shared.kill();
         let _ = self.shared.wait();

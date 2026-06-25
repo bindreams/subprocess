@@ -32,9 +32,7 @@ fn spawn_control(mode: &str, extra: &[&str], contain: bool) -> (subprocess::Chil
 fn wait_timeout_returns_none_while_running() {
     // `control-block` blocks on sock.read forever; the test never writes, so the
     // child cannot exit. wait_timeout bounds a never-completing event -> Ok(None),
-    // independent of the duration. (Aliveness is guaranteed STRUCTURALLY by the
-    // never-written socket; the None result is meaningful only paired with the
-    // companion `wait_timeout_returns_some_after_exit`, which pins the Some path.)
+    // independent of the duration.
     let (child, _sock) = spawn_control("control-block", &["R"], false);
     let r = child.wait_timeout(Duration::from_millis(200)).expect("wait_timeout");
     assert!(r.is_none(), "still-running child must time out to None, got {r:?}");
@@ -84,7 +82,7 @@ fn wait_timeout_zero_returns_none_while_running() {
 fn wait_deadline_past_returns_none_while_running() {
     // A deadline at/before now is the try_wait path. Aliveness is STRUCTURAL: the child
     // is blocked on an un-written control socket and cannot exit, so None is determined
-    // by structure, not by the deadline value (meaningful paired with the Some test below).
+    // by structure, not by the deadline value.
     let (child, _sock) = spawn_control("control-block", &["R"], false);
     let r = child.wait_deadline(Instant::now()).expect("wait_deadline");
     assert!(r.is_none(), "live child past a past deadline must be None, got {r:?}");
@@ -108,10 +106,9 @@ fn wait_deadline_past_returns_some_after_exit() {
 
 #[test]
 fn concurrent_wait_timeout_and_kill_is_safe() {
-    // wait_timeout in one thread, kill in another, sharing &Child (requires Child:
-    // Sync, asserted below). shared_child makes this race-free (waitid WNOWAIT pins
-    // the pid). The kill guarantees death, so wait_timeout observes Some —
-    // deterministic, no is_alive/sleep. The 30s is only a backstop against a hang.
+    // shared_child makes this race-free (waitid WNOWAIT pins the pid). The kill
+    // guarantees death, so wait_timeout observes Some — deterministic, no
+    // is_alive/sleep. The 30s is only a backstop against a hang.
     let (child, _sock) = spawn_control("control-block", &["R"], false);
     std::thread::scope(|s| {
         let waiter = s.spawn(|| child.wait_timeout(Duration::from_secs(30)));
@@ -127,7 +124,7 @@ fn concurrent_wait_timeout_and_kill_is_safe() {
 #[test]
 fn child_is_send_and_sync() {
     // Load-bearing for `concurrent_wait_timeout_and_kill_is_safe` (shares &Child across
-    // threads). Compile-time invariant guard.
+    // threads).
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<subprocess::Child>();
 }

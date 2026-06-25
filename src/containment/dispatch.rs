@@ -54,7 +54,6 @@ impl Attached {
     /// Hard-kill the contained tree (best-effort; already-gone is success).
     pub(crate) fn hard_kill(&self) -> Result<(), crate::error::Error> {
         match self {
-            // Reachable: Drop calls hard_kill on uncontained/nested children.
             Attached::None | Attached::Delegated => Ok(()),
             #[cfg(unix)]
             Attached::ProcessGroup(pgid) => {
@@ -88,7 +87,7 @@ impl Attached {
                 Err(crate::error::Error::Unsupported {
                     op: "terminate on a non-actionable mechanism".into(),
                     platform: std::env::consts::OS,
-                    detail: "internal invariant: terminate_tree()'s require_contained() guard was bypassed".into(),
+                    detail: "internal invariant: a non-actionable mechanism reached terminate".into(),
                 })
             }
             #[cfg(unix)]
