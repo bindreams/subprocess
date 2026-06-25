@@ -56,6 +56,20 @@ fn wait_timeout_returns_some_after_exit() {
 }
 
 #[test]
+fn wait_timeout_huge_duration_does_not_panic() {
+    // Duration::MAX overflows `Instant::now() + timeout`; wait_timeout must treat it as
+    // unbounded (block until exit) and return Some, never panic. Trigger the exit first so the
+    // unbounded wait completes deterministically (the child exits when it reads the byte).
+    let (child, mut sock) = spawn_control("control-block", &["R"], false);
+    sock.write_all(b"x").expect("trigger child exit");
+    let r = child.wait_timeout(Duration::MAX).expect("wait_timeout");
+    assert!(
+        matches!(r, Some(s) if s.success()),
+        "huge-timeout wait must observe the exit, got {r:?}"
+    );
+}
+
+#[test]
 fn wait_timeout_zero_returns_none_while_running() {
     // Duration::ZERO is the try_wait path: it must return immediately with None for a
     // still-running (structurally wedged) child, never block or false-positive Some.
