@@ -58,3 +58,60 @@ fn unix_setup_for_none_mode_selects_process_group() {
     use super::{unix_setup_for, UnixSetup};
     assert_eq!(unix_setup_for(None), UnixSetup::ProcessGroup);
 }
+
+// Attached actionability + nested delegation =====
+
+#[test]
+fn attached_is_actionable() {
+    use super::Attached;
+    // No teardown mechanism -> not actionable (the _tree guard rejects these).
+    assert!(!Attached::None.is_actionable()); // uncontained / lone
+    assert!(!Attached::Delegated.is_actionable()); // nested member (ancestor owns teardown)
+                                                   // Every real mechanism is actionable. TreeWalk needs only a ProcessId; ProcessGroup
+                                                   // an i32 (cfg(unix)). (Cgroup/JobObject hold OS resources, not cheaply constructible;
+                                                   // the predicate is `!matches!(None | Delegated)`, so a new mechanism variant defaults
+                                                   // to actionable — the correct default.)
+    assert!(Attached::TreeWalk(crate::identity::ProcessId::current()).is_actionable());
+    #[cfg(unix)]
+    assert!(Attached::ProcessGroup(0).is_actionable());
+}
+
+/// Drives the real `attach()` nested arms (not a hand-built variant): a nested
+/// (`!is_root`) contained spawn must yield `Attached::Delegated` for BOTH a kernel
+/// mechanism (Strongest) and TreeWalk, so a nested member's `_tree` ops error rather
+/// than silently no-op.
+#[test]
+fn nested_attach_is_delegated() {
+    use super::{attach, Attached, Prepared};
+    use crate::containment::ContainMode;
+
+    fn spawn_trivial() -> std::process::Child {
+        // attach()'s nested arms don't touch the child, so an exited child is fine.
+        #[cfg(unix)]
+        return std::process::Command::new("true").spawn().expect("spawn true");
+        #[cfg(windows)]
+        return std::process::Command::new("cmd")
+            .args(["/C", "exit"])
+            .spawn()
+            .expect("spawn cmd");
+    }
+
+    for mode in [ContainMode::Strongest, ContainMode::TreeWalk] {
+        let mut child = spawn_trivial();
+        let prepared = Prepared {
+            mode: Some(mode),
+            is_root: false, // nested member
+            #[cfg(target_os = "linux")]
+            cgroup_leaf: None,
+        };
+        let (_containment, attached) = attach(&child, prepared).expect("attach nested");
+        // Reap before asserting: `attached` is owned and independent of `child`, so a
+        // failing assertion must not leak the helper (the nested arms don't touch it).
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(attached, Attached::Delegated),
+            "nested member ({mode:?}) must be Attached::Delegated, got {attached:?}"
+        );
+    }
+}

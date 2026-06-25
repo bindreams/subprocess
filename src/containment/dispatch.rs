@@ -26,6 +26,10 @@ pub(crate) struct Prepared {
 pub(crate) enum Attached {
     #[default]
     None,
+    /// A nested containment member: it joined an ancestor's group/job and owns no
+    /// teardown mechanism of its own (the outermost root tears the tree down). Distinct
+    /// from `None` (genuinely uncontained) so `_tree` ops can error honestly.
+    Delegated,
     #[cfg(unix)]
     ProcessGroup(i32), // pgid (== root pid)
     #[cfg(target_os = "linux")]
@@ -50,7 +54,8 @@ impl Attached {
     /// Hard-kill the contained tree (best-effort; already-gone is success).
     pub(crate) fn hard_kill(&self) -> Result<(), crate::error::Error> {
         match self {
-            Attached::None => Ok(()),
+            // Reachable: Drop calls hard_kill on uncontained/nested children.
+            Attached::None | Attached::Delegated => Ok(()),
             #[cfg(unix)]
             Attached::ProcessGroup(pgid) => {
                 crate::containment::unix::kill_group(*pgid).map_err(crate::error::Error::Io)
@@ -75,7 +80,20 @@ impl Attached {
     /// Send the graceful termination signal to the group (signal-only).
     pub(crate) fn terminate(&self, _child_pid: u32) -> Result<(), Error> {
         match self {
-            Attached::None => Ok(()),
+            Attached::None | Attached::Delegated => {
+                // Unreachable: terminate_tree() gates on require_contained(), which rejects a
+                // non-actionable mechanism. Assert in debug; in release, surface loudly rather
+                // than a silent success-on-nothing if the guard is ever bypassed.
+                debug_assert!(
+                    self.is_actionable(),
+                    "Attached::terminate on a non-actionable mechanism"
+                );
+                Err(crate::error::Error::Unsupported {
+                    op: "terminate on a non-actionable mechanism".into(),
+                    platform: std::env::consts::OS,
+                    detail: "internal invariant: terminate_tree()'s require_contained() guard was bypassed".into(),
+                })
+            }
             #[cfg(unix)]
             Attached::ProcessGroup(pgid) => crate::containment::unix::term_group(*pgid).map_err(Error::Io),
             #[cfg(target_os = "linux")]
@@ -91,7 +109,7 @@ impl Attached {
     /// No-op for mechanisms whose resource-drop does not kill (pgroup/cgroup/none).
     pub(crate) fn disarm(&self) {
         match self {
-            Attached::None => {}
+            Attached::None | Attached::Delegated => {}
             #[cfg(unix)]
             Attached::ProcessGroup(_) => {} // pgroup drop doesn't kill — no-op
             #[cfg(target_os = "linux")]
@@ -99,6 +117,22 @@ impl Attached {
             #[cfg(windows)]
             Attached::JobObject(job) => job.disarm(), // clear KILL_ON_JOB_CLOSE before handle drops
             Attached::TreeWalk(_) => {} // no kernel resource whose drop kills; detach opts out via kill_on_drop
+        }
+    }
+
+    /// Whether this child holds an actionable tree-teardown mechanism. `None`
+    /// (uncontained) and `Delegated` (nested member) own none — the `_tree` ops reject
+    /// them. Exhaustive (no `_`): a new mechanism variant must declare its actionability.
+    pub(crate) fn is_actionable(&self) -> bool {
+        match self {
+            Attached::None | Attached::Delegated => false,
+            #[cfg(unix)]
+            Attached::ProcessGroup(_) => true,
+            #[cfg(target_os = "linux")]
+            Attached::Cgroup(_) => true,
+            #[cfg(windows)]
+            Attached::JobObject(_) => true,
+            Attached::TreeWalk(_) => true,
         }
     }
 }
@@ -316,7 +350,7 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                 return Ok((Containment::ProcessGroup, Attached::ProcessGroup(pgid)));
             } else if matches!(prepared.mode, Some(ContainMode::TreeWalk)) {
                 // Nested TreeWalk: the root's walk already covers this subtree.
-                return Ok((Containment::TreeWalk, Attached::None));
+                return Ok((Containment::TreeWalk, Attached::Delegated));
             } else {
                 // Nested (non-TreeWalk): this child inherited the ancestor's
                 // grouping rather than creating its own. For a Strongest root the
@@ -324,9 +358,9 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                 // ancestor's group is the session's initial process group (the
                 // session leader's pgid). Either way this nested child is itself
                 // neither a group nor a session leader, so reporting
-                // `Containment::ProcessGroup` (with `Attached::None` — the root
+                // `Containment::ProcessGroup` (with `Attached::Delegated` — the root
                 // owns teardown) is the correct, honest descriptor.
-                return Ok((Containment::ProcessGroup, Attached::None));
+                return Ok((Containment::ProcessGroup, Attached::Delegated));
             }
         }
     }
@@ -357,15 +391,15 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
                 return Ok((containment, Attached::ProcessGroup(pgid)));
             } else if matches!(prepared.mode, Some(ContainMode::TreeWalk)) {
                 // Nested TreeWalk: covered by the root's walk.
-                return Ok((Containment::TreeWalk, Attached::None));
+                return Ok((Containment::TreeWalk, Attached::Delegated));
             } else {
                 // Nested (non-TreeWalk): inherited the ancestor's grouping. For a
                 // Session root the ancestor's group is the session's initial
                 // process group (the session leader's pgid); for a Strongest root
                 // it is the ancestor's process group. This nested child is not
                 // itself a session leader, so reporting `Containment::ProcessGroup`
-                // (with `Attached::None` — the root owns teardown) is correct.
-                return Ok((Containment::ProcessGroup, Attached::None));
+                // (with `Attached::Delegated` — the root owns teardown) is correct.
+                return Ok((Containment::ProcessGroup, Attached::Delegated));
             }
         }
     }
@@ -394,9 +428,9 @@ pub(crate) fn attach(child: &std::process::Child, prepared: Prepared) -> Result<
             // Nested TreeWalk is covered by the root's walk; other modes inherit
             // the ancestor's job (no new job created).
             if matches!(prepared.mode, Some(ContainMode::TreeWalk)) {
-                return Ok((Containment::TreeWalk, Attached::None));
+                return Ok((Containment::TreeWalk, Attached::Delegated));
             }
-            return Ok((Containment::JobObject, Attached::None));
+            return Ok((Containment::JobObject, Attached::Delegated));
         }
     }
 
