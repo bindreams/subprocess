@@ -181,8 +181,7 @@ fn main() {
         }
         #[cfg(unix)]
         "control-block-ignore-term" => {
-            // Ignore SIGTERM, then behave exactly like control-block. graceful_shutdown must
-            // escalate to SIGKILL; the test asserts death by signal 9, never via a timer.
+            // Ignore SIGTERM, then behave exactly like control-block.
             // SAFETY: installing SIG_IGN for SIGTERM has no preconditions and is always safe.
             unsafe {
                 let _ = libc::signal(libc::SIGTERM, libc::SIG_IGN);

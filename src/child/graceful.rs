@@ -24,10 +24,10 @@ impl Child {
     pub fn graceful_shutdown(&self, grace: Duration) -> Result<ExitStatus, Error> {
         crate::wait::terminate(self.id)?; // SIGTERM (Windows: Unsupported, early return)
         if let Some(status) = self.wait_timeout(grace)? {
-            return Ok(status); // exited within grace — reaped; a lone wait has no killpg hazard
+            return Ok(status); // exited within grace
         }
-        self.shared.kill().map_err(Error::Io)?; // timeout → hard SIGKILL the root
-        self.wait() // reap → ExitStatus (SIGKILL)
+        self.shared.kill().map_err(Error::Io)?;
+        self.wait()
     }
 
     /// Cooperative-then-forced shutdown of the contained tree: send the group its graceful
@@ -48,7 +48,7 @@ impl Child {
         self.require_contained()?;
         self.terminate_tree()?; // group SIGTERM / CTRL_BREAK (signal-only)
         let _ = crate::wait::block_until_exit(self.id, Some(grace))?; // NON-reaping grace-wait on root
-        self.kill_tree()?; // unconditional hard sweep BEFORE reap (no-op if already drained)
-        self.wait() // reap → ExitStatus
+        self.kill_tree()?;
+        self.wait()
     }
 }

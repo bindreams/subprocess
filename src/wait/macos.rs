@@ -89,8 +89,7 @@ pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
 pub(crate) fn terminate(id: ProcessId) -> Result<(), Error> {
     use nix::sys::signal::{kill as nix_kill, Signal};
     use nix::unistd::Pid;
-    // Re-verify identity immediately before signaling; the window to kill(2) is the same
-    // irreducible best-effort window as `kill`, documented at the module head.
+    // Re-verify identity immediately before signaling.
     if ProcessId::of(id.pid()) != Some(id) {
         return Ok(()); // gone (or recycled) => already-dead is success
     }

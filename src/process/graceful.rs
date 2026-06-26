@@ -22,7 +22,7 @@ impl Process {
     /// Unix only; Windows returns `Unsupported`. `grace` is relative; `ZERO` signals, polls
     /// once, then escalates.
     pub fn graceful_shutdown(&self, grace: Duration) -> Result<(), Error> {
-        crate::wait::terminate(self.id)?; // SIGTERM (Windows: Unsupported)
+        crate::wait::terminate(self.id)?;
         if crate::wait::block_until_exit(self.id, Some(grace))? {
             return Ok(()); // exited within grace
         }
@@ -73,7 +73,7 @@ impl Process {
     /// `Unsupported`).
     pub fn graceful_shutdown_tree(&self, grace: Duration) -> Result<(), Error> {
         self.terminate_tree()?; // SIGTERM-walk (Windows: Unsupported, early return)
-        let _ = crate::wait::block_until_exit(self.id, Some(grace))?; // non-reaping grace-wait on root
-        self.kill_tree() // hard identity-walk sweep
+        let _ = crate::wait::block_until_exit(self.id, Some(grace))?;
+        self.kill_tree()
     }
 }

@@ -74,8 +74,7 @@ fn child_graceful_shutdown_escalates() {
     // This child installs SIG_IGN for SIGTERM, so it NEVER exits on the soft signal. With
     // Duration::ZERO the child is provably alive at the single poll → escalation to SIGKILL is
     // deterministic (no timing dependency at all). Because SIGTERM is ignored, SIGKILL is the
-    // ONLY terminating signal the child can receive, so signal()==SIGKILL is unambiguous — do
-    // not weaken control-block-ignore-term to honor SIGTERM or this assertion loses its meaning.
+    // ONLY terminating signal the child can receive, so signal()==SIGKILL is unambiguous.
     let (child, mut sock) = common::spawn_control("control-block-ignore-term", &["R"], false);
     let status = child
         .graceful_shutdown(Duration::ZERO)
@@ -203,7 +202,7 @@ fn process_graceful_shutdown_escalates() {
     use std::os::unix::process::ExitStatusExt;
     use std::time::Duration;
     // SIGTERM is ignored → SIGKILL is the only terminating signal the child can receive, so the
-    // reaped status is unambiguously SIGKILL (do not weaken control-block-ignore-term).
+    // reaped status is unambiguously SIGKILL.
     let (child, mut sock) = common::spawn_control("control-block-ignore-term", &["R"], false);
     let p = subprocess::Process::from_pid(child.id().pid()).expect("resolves");
     p.graceful_shutdown(Duration::ZERO).expect("foreign escalates");
