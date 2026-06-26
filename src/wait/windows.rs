@@ -58,7 +58,13 @@ pub(crate) fn kill(id: ProcessId) -> Result<(), Error> {
         Ok(h) => h,
         // Can't open: gone => already-dead Ok; live but denied => Err (is_alive is the
         // signaled-state check, synchronously correct on exit — not zombie-inclusive exists).
-        Err(e) => return if id.is_alive() { Err(Error::Io(e.into())) } else { Ok(()) },
+        Err(e) => {
+            return if id.is_alive() {
+                Err(Error::Io(e.into()))
+            } else {
+                Ok(())
+            }
+        }
     };
     // Re-verify identity on the HELD handle: a pid recycled before OpenProcess pins the
     // NEW process, whose creation token won't match — abort (the original is already gone).
