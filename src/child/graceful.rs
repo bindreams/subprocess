@@ -29,4 +29,26 @@ impl Child {
         self.shared.kill().map_err(Error::Io)?; // timeout → hard SIGKILL the root
         self.wait() // reap → ExitStatus (SIGKILL)
     }
+
+    /// Cooperative-then-forced shutdown of the contained tree: send the group its graceful
+    /// signal (`SIGTERM` via `killpg`/cgroup, or `CTRL_BREAK` to the job/console group), wait
+    /// up to `grace` for the **root** to exit, then hard-sweep any survivors and reap the root.
+    /// Returns the root's `ExitStatus`. Requires an actionable containment mechanism (errors
+    /// `Unsupported` otherwise — use [`graceful_shutdown`](Child::graceful_shutdown) for a lone
+    /// child). Works on all platforms.
+    ///
+    /// The grace-wait is **non-reaping** (watches the root's exit without collecting it), so the
+    /// subsequent hard sweep runs while the root's pid — and thus the `killpg` group id — is
+    /// still valid; reaping first could let `killpg` hit a recycled group. The sweep is
+    /// unconditional but a no-op once the tree has drained, so a graceful exit's status is
+    /// preserved (the lone backstop no-ops on the already-dead root).
+    pub fn graceful_shutdown_tree(&self, grace: Duration) -> Result<ExitStatus, Error> {
+        // Fail fast before sending any signal. terminate_tree/kill_tree re-check this guard
+        // internally; the redundancy is intentional so an uncontained child errors up front.
+        self.require_contained()?;
+        self.terminate_tree()?; // group SIGTERM / CTRL_BREAK (signal-only)
+        let _ = crate::wait::block_until_exit(self.id, Some(grace))?; // NON-reaping grace-wait on root
+        self.kill_tree()?; // unconditional hard sweep BEFORE reap (no-op if already drained)
+        self.wait() // reap → ExitStatus
+    }
 }
