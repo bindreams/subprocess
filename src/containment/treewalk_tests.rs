@@ -175,3 +175,41 @@ fn children_of_keeps_one_level_genuine_children_only() {
         .collect();
     assert_eq!(pids, vec![101]);
 }
+
+// children_of_with wires allow_equal into the same-tick boundary =====
+
+#[test]
+fn children_of_same_tick_child_depends_on_allow_equal() {
+    use super::children_of_with;
+    // Direct child 101 whose token EQUALS the parent's: kept under allow_equal=true,
+    // excluded under false — proves children_of_with threads allow_equal to keeps_token.
+    let root = ProcessId::from_parts_for_test(100, ROOT_TOKEN);
+    let parents = [(101, 100)];
+    let resolve = |pid: u32| (pid == 101).then(|| ProcessId::from_parts_for_test(101, ROOT_TOKEN));
+    assert_eq!(
+        pids(children_of_with(root, &parents, true, resolve)),
+        [101],
+        "same-tick child included with allow_equal=true"
+    );
+    assert!(
+        children_of_with(root, &parents, false, resolve).is_empty(),
+        "same-tick child excluded with allow_equal=false"
+    );
+}
+
+// A duplicate edge enumerates a direct child only once =====
+
+#[test]
+fn children_of_duplicate_edge_yields_pid_once() {
+    use super::children_of_with;
+    // A snapshot listing the same (pid, ppid) edge twice must not enumerate (or later
+    // double-kill) the same child twice.
+    let root = ProcessId::from_parts_for_test(100, ROOT_TOKEN);
+    let parents = [(101, 100), (101, 100)];
+    let resolve = |pid: u32| (pid == 101).then(|| ProcessId::from_parts_for_test(101, ROOT_TOKEN + 1));
+    assert_eq!(
+        pids(children_of_with(root, &parents, true, resolve)),
+        [101],
+        "duplicate edge collapses to a single child"
+    );
+}

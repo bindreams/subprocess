@@ -57,7 +57,7 @@ impl Process {
     /// parent). `Err` only on a wait failure (incl. `Unsupported` on Linux < 5.3). Non-reaping.
     pub fn wait(&self) -> Result<(), Error> {
         let exited = crate::wait::block_until_exit(self.id, None)?;
-        debug_assert!(exited, "an unbounded wait can only return on exit");
+        debug_assert!(exited);
         Ok(())
     }
 
@@ -78,7 +78,10 @@ impl Process {
             return None;
         }
         let parents = crate::containment::enumerate::process_parents();
-        let ppid = parents.iter().find(|&&(pid, _)| pid == self.id.pid()).map(|&(_, ppid)| ppid)?;
+        let ppid = parents
+            .iter()
+            .find(|&&(pid, _)| pid == self.id.pid())
+            .map(|&(_, ppid)| ppid)?;
         // A process is never its own parent (treewalk's convention).
         if ppid == self.id.pid() {
             return None;

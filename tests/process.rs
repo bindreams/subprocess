@@ -16,8 +16,6 @@ fn foreign_wait_returns_when_the_process_exits() {
     sock.write_all(b"x").expect("trigger child exit");
     p.wait().expect("foreign wait");
     // Prove the exit via a real event (the dead child's socket EOFs), not is_alive().
-    // wait()'s block-until-exit semantics are independently pinned by the wait_timeout
-    // tests below (a no-op wait would make THOSE fail deterministically).
     let mut buf = [0u8; 1];
     match sock.read(&mut buf) {
         Ok(0) => {}
@@ -87,7 +85,7 @@ fn from_pid_resolves_a_live_foreign_child_then_reports_it_dead() {
     // reap, never by sleep.
     let (child, _sock) = spawn_blocker();
     let p = subprocess::Process::from_pid(child.id().pid()).expect("live foreign child resolves");
-    assert_eq!(p.id(), child.id(), "from_pid must resolve the child's true identity");
+    assert_eq!(p.id(), child.id());
     assert!(p.is_alive(), "a freshly spawned foreign child is alive");
     child.kill().expect("kill");
     child.wait().expect("reap"); // synchronously confirm exit before the liveness assertion
@@ -112,6 +110,62 @@ fn parent_and_children_resolve_the_spawned_tree() {
 
     sock.write_all(b"x").expect("release child");
     let _ = child.wait();
+}
+
+#[test]
+fn children_recursive_distinguishes_direct_from_descendant() {
+    use std::net::TcpListener;
+    // spawn-grandchild: the child connects (tag "R") and spawns a control-block grandchild
+    // (tag "G"). Accepting BOTH proves the 2-level tree is alive; we learn the grandchild's
+    // identity via kid.children(No), then assert it is in me.children(Yes) but NOT No — the
+    // one-level-vs-recursive distinction a No<->Yes arm swap would otherwise pass silently.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap().to_string();
+    let mut cmd = subprocess::Command::new();
+    cmd.executable(common::testbin())
+        .args(["subprocess_testbin", "spawn-grandchild", &addr]);
+    let child = cmd.spawn().expect("spawn tree");
+    let mut socks = Vec::new();
+    for _ in 0..2 {
+        let (mut s, _) = listener.accept().expect("accept");
+        let mut tag = [0u8; 1];
+        s.read_exact(&mut tag).expect("read tag");
+        socks.push(s);
+    }
+    let me = subprocess::Process::current();
+    let kid = subprocess::Process::from_pid(child.id().pid()).expect("child resolves");
+    // The grandchild is kid's only direct child — use it to learn the grandchild's identity.
+    let grandkids = kid.children(subprocess::Recursive::No);
+    assert_eq!(
+        grandkids.len(),
+        1,
+        "the spawn-grandchild child has exactly one direct child"
+    );
+    let grandkid = grandkids[0];
+
+    let direct = me.children(subprocess::Recursive::No);
+    assert!(
+        direct.iter().any(|p| p.id() == kid.id()),
+        "Recursive::No must include the direct child"
+    );
+    assert!(
+        !direct.iter().any(|p| p.id() == grandkid.id()),
+        "Recursive::No must EXCLUDE the grandchild"
+    );
+    let all = me.children(subprocess::Recursive::Yes);
+    assert!(
+        all.iter().any(|p| p.id() == kid.id()),
+        "Recursive::Yes must include the child"
+    );
+    assert!(
+        all.iter().any(|p| p.id() == grandkid.id()),
+        "Recursive::Yes must include the grandchild"
+    );
+
+    // Teardown: kill the direct child; the reparented grandchild exits when its socket closes.
+    child.kill().expect("kill child");
+    let _ = child.wait();
+    drop(socks);
 }
 
 #[test]

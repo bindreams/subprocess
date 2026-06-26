@@ -17,7 +17,7 @@ fn open_verified(id: ProcessId) -> Result<Option<rustix::fd::OwnedFd>, Error> {
         "pid {} exceeds i32::MAX; pidfd cast would truncate",
         id.pid()
     );
-    let raw = Pid::from_raw(id.pid() as i32).expect("a resolvable ProcessId never holds pid 0");
+    let raw = Pid::from_raw(id.pid() as i32).expect("pid 0");
     let pidfd = match pidfd_open(raw, PidfdFlags::empty()) {
         Ok(fd) => fd,
         Err(rustix::io::Errno::SRCH) => return Ok(None),
