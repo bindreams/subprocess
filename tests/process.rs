@@ -184,7 +184,11 @@ fn foreign_kill_terminates_the_process() {
     p.kill().expect("second kill on a dead process must be Ok");
 }
 
-#[cfg(unix)]
+// Linux-only: pid 1 (init) is world-resolvable (`/proc/1`) AND non-root-unkillable there.
+// On macOS, launchd (pid 1) is NOT `proc_pidinfo`-resolvable by a non-root process, and there
+// is no portable resolvable-but-unkillable target — the macOS `wait::kill` EPERM->Err mapping
+// is the same reviewed code, and its success path is covered by `foreign_kill_terminates`.
+#[cfg(target_os = "linux")]
 #[test]
 fn foreign_kill_surfaces_permission_denied() {
     // pid 1 (init) is always alive but unkillable: SIGKILL to it is kernel-ignored. As a
@@ -236,9 +240,13 @@ fn is_alive_is_false_for_a_real_zombie() {
     p.wait().expect("death-watch"); // returns at the zombie instant (no reap yet)
 
     assert!(!p.is_alive(), "an exited-but-unreaped child is a zombie => not alive");
+    // Linux keeps a zombie resolvable (`/proc` persists → exists() is zombie-inclusive). macOS
+    // `proc_pidinfo` does NOT return for a zombie, so its identity stops resolving the instant
+    // it exits — assert the still-resolves property only where it holds.
+    #[cfg(target_os = "linux")]
     assert!(
         subprocess::Process::from_id(p.id()).is_some(),
-        "a zombie identity still resolves"
+        "a zombie identity still resolves on Linux"
     );
     raw.wait().expect("reap the zombie");
 }

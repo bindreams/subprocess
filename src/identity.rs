@@ -86,11 +86,12 @@ impl ProcessId {
         ProcessId::of(pid).expect("the current process always has a resolvable identity")
     }
 
-    /// Whether a process with this exact identity is still *resolvable* — the
-    /// zombie-inclusive sense (matches psutil's `is_running`). Stays true for a
-    /// not-yet-reaped Unix zombie and, on Windows, during the post-exit window
-    /// while a process handle remains open. For "is it still running?", use
-    /// [`ProcessId::is_alive`].
+    /// Whether a process with this exact identity is still *resolvable* (the
+    /// zombie-inclusive sense, matching psutil's `is_running`). True for a not-yet-reaped
+    /// zombie on **Linux** (`/proc` persists) and, on **Windows**, during the post-exit
+    /// window while a process handle remains open. **macOS caveat:** `proc_pidinfo` does
+    /// not return for a zombie, so on macOS `exists()` is already `false` once the process
+    /// exits (not zombie-inclusive). For "is it still running?", use [`ProcessId::is_alive`].
     pub fn exists(&self) -> bool {
         backend::start_token(self.pid) == Some(self.start)
     }
