@@ -28,4 +28,52 @@ impl Process {
         }
         crate::wait::kill(self.id) // timeout → hard SIGKILL (no reap — not the parent)
     }
+
+    /// Best-effort hard sweep of the foreign process's tree: an identity-walk that re-verifies
+    /// each `(pid, ppid)` before `SIGKILL`/`TerminateProcess`, root then descendants. Cannot be
+    /// atomic against a forking tree and does not surface per-process failures — the `TreeWalk`
+    /// contract. All platforms. For a guaranteed, failure-surfacing single-process kill use
+    /// [`kill`](Process::kill).
+    pub fn kill_tree(&self) -> Result<(), Error> {
+        crate::containment::treewalk::hard_kill(self.id);
+        Ok(())
+    }
+
+    /// Best-effort graceful (`SIGTERM`) sweep of the foreign process's tree (identity-walk, root
+    /// then descendants). Signal-only. Unix only: Windows has no per-process graceful signal and
+    /// a foreign process shares no addressable group with us, so this returns `Unsupported`
+    /// there (use [`kill_tree`](Process::kill_tree) for a hard sweep).
+    pub fn terminate_tree(&self) -> Result<(), Error> {
+        #[cfg(unix)]
+        {
+            crate::containment::treewalk::terminate(self.id)
+        }
+        #[cfg(windows)]
+        {
+            let _ = self.id;
+            Err(Error::Unsupported {
+                op: "foreign tree graceful terminate".into(),
+                platform: "windows",
+                detail: "Windows has no per-process graceful signal, and a foreign process \
+                         shares no addressable process group with us; use kill_tree for a hard \
+                         identity-walk sweep"
+                    .into(),
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = self.id;
+            Ok(())
+        }
+    }
+
+    /// Cooperative-then-forced shutdown of the foreign process's tree: `SIGTERM`-walk, wait up
+    /// to `grace` for the **root** to exit, then a hard identity-walk sweep. Best-effort (the
+    /// `TreeWalk` contract); no `ExitStatus`. Unix only (Windows `terminate_tree` is
+    /// `Unsupported`).
+    pub fn graceful_shutdown_tree(&self, grace: Duration) -> Result<(), Error> {
+        self.terminate_tree()?; // SIGTERM-walk (Windows: Unsupported, early return)
+        let _ = crate::wait::block_until_exit(self.id, Some(grace))?; // non-reaping grace-wait on root
+        self.kill_tree() // hard identity-walk sweep
+    }
 }

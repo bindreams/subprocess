@@ -230,3 +230,60 @@ fn process_lone_graceful_unsupported_on_windows() {
     child.kill().expect("cleanup");
     let _ = child.wait();
 }
+
+#[test]
+fn process_kill_tree_tears_down_tree() {
+    use std::io::Read;
+    // An UNcontained 2-level tree (root R + grandchild G). Take the root foreign and kill_tree
+    // it: the identity-walk (snapshot-then-kill) reaches both. Both sockets EOF. All OSes.
+    let (child, mut socks) = common::spawn_grandchild(false);
+    let p = subprocess::Process::from_pid(child.id().pid()).expect("resolves");
+    p.kill_tree().expect("kill_tree");
+    for (i, s) in socks.iter_mut().enumerate() {
+        let mut buf = [0u8; 1];
+        match s.read(&mut buf) {
+            Ok(0) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("tree member {i} not torn down: {other:?}"),
+        }
+    }
+    let _ = child.wait(); // reap the owned root (grandchild is reaped by init)
+}
+
+#[cfg(unix)]
+#[test]
+fn process_graceful_shutdown_tree_tears_down_tree() {
+    use std::io::Read;
+    use std::time::Duration;
+    let (child, mut socks) = common::spawn_grandchild(false);
+    let p = subprocess::Process::from_pid(child.id().pid()).expect("resolves");
+    p.graceful_shutdown_tree(Duration::from_secs(30))
+        .expect("foreign tree graceful");
+    for (i, s) in socks.iter_mut().enumerate() {
+        let mut buf = [0u8; 1];
+        match s.read(&mut buf) {
+            Ok(0) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+            other => panic!("tree member {i} not torn down: {other:?}"),
+        }
+    }
+    let _ = child.wait();
+}
+
+#[cfg(windows)]
+#[test]
+fn process_soft_tree_unsupported_on_windows() {
+    use std::time::Duration;
+    let (child, _sock) = common::spawn_blocker();
+    let p = subprocess::Process::from_pid(child.id().pid()).expect("resolves");
+    assert!(matches!(
+        p.terminate_tree(),
+        Err(subprocess::error::Error::Unsupported { .. })
+    ));
+    assert!(matches!(
+        p.graceful_shutdown_tree(Duration::from_secs(1)),
+        Err(subprocess::error::Error::Unsupported { .. })
+    ));
+    child.kill().expect("cleanup");
+    let _ = child.wait();
+}
